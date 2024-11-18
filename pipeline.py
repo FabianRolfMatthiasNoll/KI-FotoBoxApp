@@ -1,11 +1,10 @@
 import cv2
 import numpy as np
+import mediapipe as mp
+import math
 import torch
 from torchvision import transforms
-import tensorflow as tf
-import tensorflow_hub as hub
-from u2net import U2NET  # Import the U^2-Net model class
-import math
+from u2net import U2NET
 
 
 # Function to load the U^2-Net model
@@ -18,7 +17,6 @@ def load_u2net_model(model_path):
 
 # Function to perform background removal using U^2-Net
 def remove_background(image, model):
-    # Transform the image
     transform = transforms.Compose(
         [
             transforms.ToPILImage(),
@@ -39,7 +37,7 @@ def remove_background(image, model):
         prediction = prediction.squeeze().cpu().numpy()
 
     # Adjust threshold
-    mask = prediction > 0.501  # Lowered threshold
+    mask = prediction > 0.501
 
     # Resize mask to original image size
     mask = cv2.resize(
@@ -48,55 +46,139 @@ def remove_background(image, model):
         interpolation=cv2.INTER_NEAREST,
     )
 
-    # Apply morphological operations to clean up the mask
-    kernel = np.ones((5, 5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
-    # Apply mask to the image
-    result = cv2.bitwise_and(image, image, mask=mask)
-    return result, mask
+    return mask
 
 
-# Function to load MoveNet MultiPose model
-def load_movenet_model():
-    model = hub.load("https://tfhub.dev/google/movenet/multipose/lightning/1")
-    return model
+# Function to detect people using YOLOv5
+def detect_people_yolo(image, model, conf_threshold=0.5, debug_mode=False):
+    results = model(image)
 
+    # Extract bounding boxes from results
+    detections = (
+        results.xyxy[0].cpu().numpy()
+    )  # Bounding boxes in [x1, y1, x2, y2, conf, class]
+    bounding_boxes = []
+    for det in detections:
+        x1, y1, x2, y2, conf, cls = det
+        if conf > conf_threshold and int(cls) == 0:  # Class 0 corresponds to 'person'
+            bounding_boxes.append((int(x1), int(y1), int(x2 - x1), int(y2 - y1)))
+            if debug_mode:
+                print(
+                    f"Detected person: x={x1}, y={y1}, w={x2 - x1}, h={y2 - y1}, conf={conf}"
+                )
 
-# Function to run pose estimation
-def run_pose_estimation(image, model):
-    input_size = 256
-    image_resized = tf.image.resize_with_pad(image, input_size, input_size)
-    input_image = tf.cast(image_resized, dtype=tf.int32)
-    input_image = tf.expand_dims(input_image, axis=0)
-    outputs = model.signatures["serving_default"](input_image)
-    keypoints_with_scores = outputs["output_0"].numpy()
-    return keypoints_with_scores
+    return bounding_boxes
 
 
 # Function to rotate an image
 def rotate_image(image, angle):
-    # Get the image size
     h, w = image.shape[:2]
-    # Calculate the center of the image
-    center = (w / 2, h / 2)
-    # Get rotation matrix
+    center = (w // 2, h // 2)
     M = cv2.getRotationMatrix2D(center, angle, 1.0)
-    # Perform the rotation
     rotated_image = cv2.warpAffine(
         image, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
     )
     return rotated_image
 
 
+# Function to process a single person with MediaPipe Pose
+def process_person(image, bounding_box, hat_image, debug_mode=False):
+    x, y, w, h = bounding_box
+    person_crop = image[y : y + h, x : x + w]
+
+    # Run MediaPipe Pose on the cropped person
+    mp_pose = mp.solutions.pose
+    pose = mp_pose.Pose(static_image_mode=True, model_complexity=2)
+    results = pose.process(cv2.cvtColor(person_crop, cv2.COLOR_BGR2RGB))
+    pose.close()
+
+    if not results.pose_landmarks:
+        if debug_mode:
+            print(f"No landmarks detected for bounding box: x={x}, y={y}, w={w}, h={h}")
+        return image  # Skip if no landmarks are detected
+
+    # Extract keypoints
+    landmarks = results.pose_landmarks.landmark
+    keypoints = np.array([[lmk.x * w, lmk.y * h, lmk.visibility] for lmk in landmarks])
+
+    # Extract keypoint indices for the hat placement
+    NOSE = mp.solutions.pose.PoseLandmark.NOSE.value
+    LEFT_EYE = mp.solutions.pose.PoseLandmark.LEFT_EYE.value
+    RIGHT_EYE = mp.solutions.pose.PoseLandmark.RIGHT_EYE.value
+
+    nose = keypoints[NOSE]
+    left_eye = keypoints[LEFT_EYE]
+    right_eye = keypoints[RIGHT_EYE]
+
+    # Confidence thresholds
+    min_confidence = 0.5
+    if left_eye[2] > min_confidence and right_eye[2] > min_confidence:
+        head_x = (left_eye[0] + right_eye[0]) / 2 + x
+        head_y = (left_eye[1] + right_eye[1]) / 2 + y
+
+        # Calculate head tilt angle
+        delta_x = right_eye[0] - left_eye[0]
+        delta_y = right_eye[1] - left_eye[1]
+        angle_deg = -math.degrees(math.atan2(delta_y, delta_x))
+
+        # Estimate face size
+        eye_distance = np.linalg.norm(left_eye[:2] - right_eye[:2])
+        face_size = eye_distance * 1.5
+
+        # Adjust hat placement vertically
+        head_y -= int(face_size * 0.4)
+    elif nose[2] > min_confidence:
+        head_x, head_y = nose[0] + x, nose[1] + y
+        face_size = w * 0.1
+        angle_deg = 0
+    else:
+        if debug_mode:
+            print(
+                f"Skipping bounding box x={x}, y={y}, w={w}, h={h} due to low confidence."
+            )
+        return image  # Skip if no reliable keypoints
+
+    # Resize and rotate the hat
+    hat_width = int(face_size * 2.5)
+    hat_height = int(hat_width * hat_image.shape[0] / hat_image.shape[1])
+    resized_hat = cv2.resize(
+        hat_image, (hat_width, hat_height), interpolation=cv2.INTER_AREA
+    )
+    rotated_hat = rotate_image(resized_hat, angle_deg - 180)
+
+    # Place the hat on the head
+    x1 = int(head_x - hat_width / 2)
+    y1 = int(head_y - hat_height)
+    x2 = x1 + hat_width
+    y2 = y1 + hat_height
+
+    # Ensure placement is within bounds
+    x1, y1 = max(x1, 0), max(y1, 0)
+    x2, y2 = min(x2, image.shape[1]), min(y2, image.shape[0])
+    rotated_hat = rotated_hat[: y2 - y1, : x2 - x1]
+
+    # Overlay the hat
+    if rotated_hat.shape[2] == 4:
+        alpha_hat = rotated_hat[:, :, 3].astype(np.float32) / 255.0
+        alpha_bg = 1.0 - alpha_hat
+        for c in range(0, 3):
+            image[y1:y2, x1:x2, c] = (
+                alpha_hat * rotated_hat[:, :, c].astype(np.float32)
+                + alpha_bg * image[y1:y2, x1:x2, c].astype(np.float32)
+            ).astype(np.uint8)
+    else:
+        image[y1:y2, x1:x2] = rotated_hat[:, :, :3]
+
+    return image
+
+
 # Main function
 def main():
-    # Paths to images and models
-    input_image_path = "test.jpg"
+    input_image_path = "nine-people.jpg"
     background_image_path = "background.jpg"
     hat_image_path = "hat.png"
     u2net_model_path = "u2net/u2net.pth"
+    debug_mode = True  # Enable debug mode
 
     # Load images
     original_image = cv2.imread(input_image_path)
@@ -112,114 +194,34 @@ def main():
         print("Error: Could not read the hat image.")
         return
 
-    # Resize background to match original image
-    background_image = cv2.resize(
+    # Load YOLOv5 model
+    print("Loading YOLOv5 model...")
+    model = torch.hub.load("ultralytics/yolov5", "yolov5s", pretrained=True)
+
+    # Detect people using YOLOv5
+    print("Detecting people with YOLOv5...")
+    bounding_boxes = detect_people_yolo(original_image, model, debug_mode=debug_mode)
+
+    # Use U^2-Net for background removal
+    u2net_model = load_u2net_model(u2net_model_path)
+    mask = remove_background(original_image, u2net_model)
+    background_removed = cv2.bitwise_and(original_image, original_image, mask=mask)
+
+    # Overlay the background
+    background_resized = cv2.resize(
         background_image, (original_image.shape[1], original_image.shape[0])
     )
+    final_image = np.where(mask[..., None] == 1, background_removed, background_resized)
 
-    # Remove background
-    print("Removing background...")
-    u2net_model = load_u2net_model(u2net_model_path)
-    person_segmented, mask = remove_background(original_image, u2net_model)
-
-    # Replace background
-    mask_3ch = cv2.merge([mask, mask, mask])
-    person_with_new_bg = np.where(mask_3ch == 1, person_segmented, background_image)
-
-    # Convert image to RGB for TensorFlow
-    image_rgb = cv2.cvtColor(person_with_new_bg, cv2.COLOR_BGR2RGB)
-    image_tf = tf.convert_to_tensor(image_rgb, dtype=tf.uint8)
-
-    # Load MoveNet model
-    print("Loading MoveNet model...")
-    movenet_model = load_movenet_model()
-
-    # Run pose estimation
-    print("Running pose estimation...")
-    keypoints_with_scores = run_pose_estimation(image_tf, movenet_model)
-
-    # Add hats to each detected person
-    height, width, _ = person_with_new_bg.shape
-    for person in keypoints_with_scores[0]:
-        keypoints = person[:51].reshape((17, 3))
-        scores = keypoints[:, 2]
-        keypoints_xy = keypoints[:, :2]
-        if scores[0] < 0.3:
-            continue  # Skip person if confidence is low
-
-        # Coordinates are in [y, x] format
-        # Get keypoints positions
-        nose = keypoints_xy[0]
-        left_eye = keypoints_xy[1]
-        right_eye = keypoints_xy[2]
-        left_eye_score = scores[1]
-        right_eye_score = scores[2]
-
-        if left_eye_score > 0.3 and right_eye_score > 0.3:
-            # Use the midpoint between left and right eyes for head center
-            head_x = (left_eye[1] + right_eye[1]) / 2 * width
-            head_y = (left_eye[0] + right_eye[0]) / 2 * height
-
-            # Calculate the angle of the head
-            delta_x = right_eye[1] * width - left_eye[1] * width
-            delta_y = right_eye[0] * height - left_eye[0] * height
-            angle_deg = -math.degrees(math.atan2(delta_y, delta_x))
-
-        else:
-            # Use nose position if eyes are not detected
-            head_x = nose[1] * width
-            head_y = nose[0] * height
-            angle_deg = 0  # No rotation
-
-        # Adjust y-coordinate to place the hat on top
-        head_y -= int(0.15 * height)  # Adjust this value as needed
-
-        # Draw circle at head center for debugging
-        # cv2.circle(person_with_new_bg, (int(head_x), int(head_y)), 5, (0, 0, 255), -1)
-
-        # Resize hat
-        hat_width = int(width * 0.2)
-        hat_height = int(hat_width * hat_image.shape[0] / hat_image.shape[1])
-        resized_hat = cv2.resize(
-            hat_image, (hat_width, hat_height), interpolation=cv2.INTER_AREA
+    # Process each detected person using MediaPipe Pose
+    for i, box in enumerate(bounding_boxes):
+        print(
+            f"Processing person {i + 1} in bounding box x={box[0]}, y={box[1]}, w={box[2]}, h={box[3]}..."
         )
+        final_image = process_person(final_image, box, hat_image, debug_mode=True)
 
-        # Rotate hat
-        rotated_hat = rotate_image(resized_hat, angle_deg - 180)
-
-        # Get dimensions of the rotated hat
-        hat_h, hat_w = rotated_hat.shape[0], rotated_hat.shape[1]
-
-        # Calculate the roll angle (tilt)
-        roll_offset = int(math.sin(math.radians(angle_deg)) * hat_h / 2)
-
-        # Adjust hat position based on roll angle
-        x1 = int(head_x - hat_w / 2 + roll_offset)
-        y1 = int(head_y - hat_h)
-
-        # Ensure coordinates are within image bounds
-        x1 = max(0, x1)
-        y1 = max(0, y1)
-        x2 = min(width, x1 + hat_w)
-        y2 = min(height, y1 + hat_h)
-
-        # Adjust hat size if it goes out of bounds
-        rotated_hat = rotated_hat[0 : (y2 - y1), 0 : (x2 - x1)]
-
-        # Extract hat alpha channel and overlay hat
-        if rotated_hat.shape[2] == 4:
-            alpha_hat = rotated_hat[:, :, 3] / 255.0
-            alpha_bg = 1.0 - alpha_hat
-            for c in range(0, 3):
-                person_with_new_bg[y1:y2, x1:x2, c] = (
-                    alpha_hat * rotated_hat[:, :, c]
-                    + alpha_bg * person_with_new_bg[y1:y2, x1:x2, c]
-                )
-        else:
-            person_with_new_bg[y1:y2, x1:x2] = rotated_hat[:, :, :3]
-
-    # Display the result
-    cv2.imshow("Result", person_with_new_bg)
+    # Display the final image
+    cv2.imshow("Result", final_image)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
