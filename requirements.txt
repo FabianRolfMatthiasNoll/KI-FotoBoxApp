@@ -1,8 +1,0 @@
-torch
-torchvision
-transformers
-opencv-python
-mediapipe
-deepface
-tf-keras
-# Detectron2 pip install flash-attn --no-build-isolation 'git+https://github.com/facebookresearch/detectron2.git'
