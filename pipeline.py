@@ -81,8 +81,17 @@ def rotate_image(image, angle):
     return rotated_image
 
 
-# Function to process a single person with MediaPipe Pose
-def process_person(image, bounding_box, hat_image, debug_mode=False):
+def process_person(
+    image,
+    bounding_box,
+    hat_image,
+    debug_mode=False,
+    landmarks_dict=None,
+    person_id=None,
+):
+    """
+    Process a single person within the given bounding box to detect pose landmarks and place a hat.
+    """
     x, y, w, h = bounding_box
     person_crop = image[y : y + h, x : x + w]
 
@@ -99,7 +108,13 @@ def process_person(image, bounding_box, hat_image, debug_mode=False):
 
     # Extract keypoints
     landmarks = results.pose_landmarks.landmark
-    keypoints = np.array([[lmk.x * w, lmk.y * h, lmk.visibility] for lmk in landmarks])
+    keypoints = np.array(
+        [[lmk.x * w + x, lmk.y * h + y, lmk.visibility] for lmk in landmarks]
+    )
+
+    # Store keypoints for debugging
+    if landmarks_dict is not None and person_id is not None:
+        landmarks_dict[person_id] = keypoints
 
     # Extract keypoint indices for the hat placement
     NOSE = mp.solutions.pose.PoseLandmark.NOSE.value
@@ -113,22 +128,24 @@ def process_person(image, bounding_box, hat_image, debug_mode=False):
     # Confidence thresholds
     min_confidence = 0.5
     if left_eye[2] > min_confidence and right_eye[2] > min_confidence:
-        head_x = (left_eye[0] + right_eye[0]) / 2 + x
-        head_y = (left_eye[1] + right_eye[1]) / 2 + y
+        # Calculate the midpoint between the eyes
+        head_x = (left_eye[0] + right_eye[0]) / 2
+        head_y = (left_eye[1] + right_eye[1]) / 2
 
         # Calculate head tilt angle
         delta_x = right_eye[0] - left_eye[0]
         delta_y = right_eye[1] - left_eye[1]
         angle_deg = -math.degrees(math.atan2(delta_y, delta_x))
 
-        # Estimate face size
+        # Estimate face size based on the distance between eyes
         eye_distance = np.linalg.norm(left_eye[:2] - right_eye[:2])
         face_size = eye_distance * 1.5
 
         # Adjust hat placement vertically
         head_y -= int(face_size * 0.4)
     elif nose[2] > min_confidence:
-        head_x, head_y = nose[0] + x, nose[1] + y
+        # Use the nose as a fallback if eyes are not detected
+        head_x, head_y = nose[0], nose[1]
         face_size = w * 0.1
         angle_deg = 0
     else:
@@ -153,14 +170,10 @@ def process_person(image, bounding_box, hat_image, debug_mode=False):
     y2 = y1 + hat_height
 
     # Calculate the visible region of the hat
-    hat_x_start = max(0, -x1)  # Start of the hat image to display
-    hat_y_start = max(0, -y1)  # Start of the hat image to display
-    hat_x_end = hat_width - max(
-        0, x2 - image.shape[1]
-    )  # End of the hat image to display
-    hat_y_end = hat_height - max(
-        0, y2 - image.shape[0]
-    )  # End of the hat image to display
+    hat_x_start = max(0, -x1)
+    hat_y_start = max(0, -y1)
+    hat_x_end = hat_width - max(0, x2 - image.shape[1])
+    hat_y_end = hat_height - max(0, y2 - image.shape[0])
 
     # Adjust placement coordinates to fit the image
     x1 = max(0, x1)
@@ -171,11 +184,11 @@ def process_person(image, bounding_box, hat_image, debug_mode=False):
     # Extract the properly cropped part of the hat
     cropped_hat = rotated_hat[hat_y_start:hat_y_end, hat_x_start:hat_x_end]
 
-    # Overlay the cropped hat on the target image
+    # Overlay the hat
     if cropped_hat.shape[2] == 4:  # If hat has alpha channel
         alpha_hat = cropped_hat[:, :, 3].astype(np.float32) / 255.0
         alpha_bg = 1.0 - alpha_hat
-        for c in range(0, 3):
+        for c in range(3):  # Iterate over RGB channels
             image[y1:y2, x1:x2, c] = (
                 alpha_hat * cropped_hat[:, :, c].astype(np.float32)
                 + alpha_bg * image[y1:y2, x1:x2, c].astype(np.float32)
@@ -186,11 +199,43 @@ def process_person(image, bounding_box, hat_image, debug_mode=False):
     return image
 
 
+def draw_debug_info(image, bounding_boxes, landmarks_dict, debug_mode=False):
+    """
+    Draws bounding boxes and pose landmarks on the image for debugging purposes.
+    """
+    debug_image = image.copy()
+
+    # Draw bounding boxes
+    for i, (x, y, w, h) in enumerate(bounding_boxes):
+        cv2.rectangle(debug_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        cv2.putText(
+            debug_image,
+            f"Person {i + 1}",
+            (x, y - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 0),
+            1,
+            cv2.LINE_AA,
+        )
+
+    # Draw pose landmarks
+    for person_id, keypoints in landmarks_dict.items():
+        for keypoint in keypoints:
+            px, py, visibility = keypoint
+            if visibility > 0.5:  # Only draw visible landmarks
+                cv2.circle(debug_image, (int(px), int(py)), 5, (255, 0, 0), -1)
+
+    if debug_mode:
+        print("Pose landmarks and bounding boxes drawn on debug image.")
+    return debug_image
+
+
 # Main function
 def main():
-    input_image_path = "workgroup.jpg"
-    background_image_path = "background.jpg"
-    hat_image_path = "hat.png"
+    input_image_path = "test_images/nine-people.jpg"
+    background_image_path = "backgrounds/background.jpg"
+    hat_image_path = "hats/hat.png"
     u2net_model_path = "u2net/u2net.pth"
     debug_mode = True  # Enable debug mode
 
@@ -227,15 +272,31 @@ def main():
     )
     final_image = np.where(mask[..., None] == 1, background_removed, background_resized)
 
+    # Store pose landmarks for debug visualization
+    landmarks_dict = {}
+
     # Process each detected person using MediaPipe Pose
     for i, box in enumerate(bounding_boxes):
         print(
             f"Processing person {i + 1} in bounding box x={box[0]}, y={box[1]}, w={box[2]}, h={box[3]}..."
         )
-        final_image = process_person(final_image, box, hat_image, debug_mode=True)
+        final_image = process_person(
+            final_image,
+            box,
+            hat_image,
+            debug_mode=True,
+            landmarks_dict=landmarks_dict,
+            person_id=i,
+        )
 
-    # Display the final image
-    cv2.imshow("Result", final_image)
+    # Generate debug image with pose landmarks and bounding boxes
+    debug_image = draw_debug_info(
+        original_image, bounding_boxes, landmarks_dict, debug_mode=debug_mode
+    )
+
+    # Display the results
+    cv2.imshow("Final Result with Hats", final_image)
+    cv2.imshow("Debug Result with Pose Landmarks", debug_image)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
