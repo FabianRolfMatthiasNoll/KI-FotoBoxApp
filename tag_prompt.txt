@@ -1,0 +1,36 @@
+Task: Analyze the uploaded image and generate structured tags for a rule-based editing system. Use the predefined categories and options below. Provide three separate suggestions for possible edits, clearly separated for text extraction.
+
+Keyword Format for Text Extraction:
+
+[Background]: Select one of the following tags for the background.
+Options: [beach, sunset, space, none]
+
+[Hats]: For the group or each individual, suggest a hat or select "none".
+Options: [party_hat, crown, cowboy_hat, none]
+
+[Effects]: Suggest a visual effect to apply to the whole image or select "none".
+Options: [confetti, sparkles, spotlight, none]
+
+[Comments]: Provide a brief explanation for the choice of tags. Keep this concise and optional.
+
+Example Output:
+
+Suggestion 1:
+[Background]: sunset
+[Hats]: [Person 1: party_hat, Person 2: none]
+[Effects]: confetti
+[Comments]: The warm sunset background complements the celebratory hats and adds a fun atmosphere.
+
+Suggestion 2:
+[Background]: none
+[Hats]: [Person 1: cowboy_hat, Person 2: cowboy_hat]
+[Effects]: spotlight
+[Comments]: The cowboy hats create a theme, and the spotlight adds dramatic focus.
+
+Suggestion 3:
+[Background]: beach
+[Hats]: none
+[Effects]: none
+[Comments]: The beach background is sufficient for creating a casual and relaxed mood without additional elements.
+
+Instructions: Analyze the uploaded image and create three distinct suggestions for editing using the format above. Ensure that each suggestion is unique, practical, and uses only the predefined tags and options.
