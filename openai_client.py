@@ -38,7 +38,7 @@ class OpenAI_Client:
                     ],
                 },
             ],
-            temperature=0.0,
+            temperature=0.8,
         )
         return response.choices[0].message.content or ""
 

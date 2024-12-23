@@ -1,0 +1,33 @@
+Task: Analyze the uploaded image and describe it using the structured format below. For each aspect of the image, provide details as requested in the corresponding sections.
+
+Keyword Format for Text Extraction:
+
+[Background]: Describe the overall background of the image (e.g., indoor/outdoor, objects, scenery, lighting).
+
+[Person]: Use a unique identifier for each person in the image (e.g., [Person 1], [Person 2], etc.). For each person, provide:
+
+[Position/Gesture]: Describe their posture, gestures, or actions.
+[Attire/Accessories]: Detail their clothing and any accessories they are wearing (e.g., hats, glasses).
+[Emotion]: Describe their facial expression and overall emotion (e.g., happy, sad, neutral).
+[Interaction]: Describe how they interact with others or the environment.
+[Suggestions]: Provide a single suggestion section describing effects or accessories that could enhance the entire image for a photobox app (e.g., add virtual props, lighting adjustments, or celebratory elements for the group).
+
+Example Keywords:
+
+[Background]: Bright outdoor park with trees and a fountain.
+
+[Person 1]:
+
+[Position/Gesture]: Standing with arms crossed.
+[Attire/Accessories]: Casual wear, baseball cap.
+[Emotion]: Smiling, joyful.
+[Interaction]: Talking to another person.
+[Person 2]:
+
+[Position/Gesture]: Seated with a slight tilt forward.
+[Attire/Accessories]: Formal suit, no hat.
+[Emotion]: Neutral expression.
+[Interaction]: Looking toward Person 1.
+[Suggestions]: Add virtual sunglasses and sunlight effect for an outdoor, relaxed vibe.
+
+Instructions: Follow this structured format to generate a detailed description of each aspect of the uploaded image, ensuring that each person is identified separately and that the Suggestions apply to the entire image.
