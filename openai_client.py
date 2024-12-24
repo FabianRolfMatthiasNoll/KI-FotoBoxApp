@@ -22,13 +22,12 @@ class OpenAI_Client:
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an assistant to describe an image in detail and generate tags for a fotobox so that the images can be edited based on the content in the following format:"
-                    + prompt,
+                    "content": "You are an assistant that analyzes images and generates strictly formatted tags for a rule-based editing system. Always follow the predefined format without deviation.",
                 },
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "Describe this image"},
+                        {"type": "text", "text": prompt},
                         {
                             "type": "image_url",
                             "image_url": {
@@ -38,26 +37,12 @@ class OpenAI_Client:
                     ],
                 },
             ],
-            temperature=0.8,
+            temperature=0.5,
         )
         return response.choices[0].message.content or ""
 
     def process_prompt(self, prompt_text):
-        """
-        Processes the structured prompt text and extracts keywords into a usable format.
-
-        Args:
-            prompt_text (str): The input prompt containing suggestions and tags.
-
-        Returns:
-            list[dict]: A list of suggestions, each represented as a dictionary with keys:
-                        'Background', 'Hats', 'Effects', and 'Comments'.
-        """
         suggestions = []
-        # Debugging output
-        print("Processing Prompt:\n", prompt_text)
-
-        # Regular expression to split suggestions
         suggestion_pattern = re.compile(
             r"Suggestion \d+:(.*?)(?=\nSuggestion \d+:|$)", re.DOTALL
         )
@@ -68,48 +53,47 @@ class OpenAI_Client:
                 "Background": "none",
                 "Hats": {},
                 "Effects": "none",
-                "Comments": "",
             }
 
-            # Extract Background
-            bg_match = re.search(r"\[Background\]:\s*([^\n]+)", match)
-            if bg_match:
-                suggestion["Background"] = bg_match.group(1).strip()
+            try:
+                # Extract fields using regex
+                bg_match = re.search(r"\[Background\]:\s*([^\n]+)", match)
+                if bg_match:
+                    suggestion["Background"] = bg_match.group(1).strip()
 
-            # Extract Hats
-            hats_match = re.search(r"\[Hats\]:\s*\[([^\]]+)\]", match)
-            if hats_match:
-                hats_text = hats_match.group(1)
-                person_matches = re.findall(r"Person (\d+):\s*([\w_]+)", hats_text)
-                suggestion["Hats"] = {
-                    f"Person {person_id}": hat for person_id, hat in person_matches
-                }
+                hats_match = re.search(r"\[Hats\]:\s*([^\n]+)", match)
+                if hats_match:
+                    suggestion["Hats"] = hats_match.group(1).strip()
 
-            # Extract Effects
-            effects_match = re.search(r"\[Effects\]:\s*([^\n]+)", match)
-            if effects_match:
-                suggestion["Effects"] = effects_match.group(1).strip()
+                effects_match = re.search(r"\[Effects\]:\s*([^\n]+)", match)
+                if effects_match:
+                    suggestion["Effects"] = effects_match.group(1).strip()
 
-            # Extract Comments
-            comments_match = re.search(
-                r"\[Comments\]:\s*(.*?)(?=\n|$)", match, re.DOTALL
-            )
-            if comments_match:
-                suggestion["Comments"] = comments_match.group(1).strip()
+                # Handle missing fields
+                if not suggestion["Background"] or not suggestion["Effects"]:
+                    raise ValueError("Missing required fields in the suggestion.")
 
-            # Fill missing Hats with "none"
-            if suggestion["Hats"]:
-                max_people = max(int(pid.split()[-1]) for pid in suggestion["Hats"])
-                for person_id in range(1, max_people + 1):
-                    person_key = f"Person {person_id}"
-                    if person_key not in suggestion["Hats"]:
-                        suggestion["Hats"][person_key] = "none"
+                suggestions.append(suggestion)
 
-            suggestions.append(suggestion)
+            except Exception as e:
+                print(f"Error processing suggestion: {e}")
+                continue
 
-        # Debugging output
-        print("Extracted Suggestions:", suggestions)
         return suggestions
+
+    def describe_image_with_retry(self, image_path, prompt, retries=3):
+        for attempt in range(retries):
+            response = self.describe_image(image_path, prompt)
+            try:
+                # Validate output
+                tag_list = self.process_prompt(response)
+                if tag_list:  # If valid tags are extracted
+                    return tag_list
+            except Exception as e:
+                print(f"Attempt {attempt + 1} failed with error: {e}")
+
+            print("Retrying...")
+        raise ValueError("Failed to get valid response after retries.")
 
 
 if __name__ == "__main__":
@@ -124,8 +108,7 @@ if __name__ == "__main__":
     with open("tag_prompt.txt", "r", encoding="utf-8") as file:
         prompt = file.read().strip()
 
-    response = client.describe_image(image_path, prompt)
-    print("Response: " + response)
-    print("===============================")
+    response = client.describe_image_with_retry(image_path, prompt)
+
     tag_list = client.process_prompt(response)
     print(tag_list)
