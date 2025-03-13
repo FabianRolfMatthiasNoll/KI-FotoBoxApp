@@ -176,4 +176,7 @@ pyrightconfig.json
 u2net/u2net.pth
 models/u2net.pth
 
+output/*
+prompt.txt
+
 # End of https://www.toptal.com/developers/gitignore/api/pythonu2net/u2net.pth

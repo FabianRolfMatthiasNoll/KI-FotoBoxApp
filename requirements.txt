@@ -1,0 +1,7 @@
+opencv-python 
+python-dotenv
+torchvision 
+retina-face
+tensorflow
+tf-keras
+openai
