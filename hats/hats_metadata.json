@@ -1,0 +1,20 @@
+{
+    "party_hat": {
+        "scale_mode": "height",
+        "scale_factor": 1.2,
+        "rotation_offset": 180,
+        "anchor_offset": -60
+    },
+    "cowboy_hat": {
+        "scale_mode": "width",
+        "scale_factor": 2.3,
+        "rotation_offset": 180,
+        "anchor_offset": -100
+    },
+    "crown": {
+        "scale_mode": "width",
+        "scale_factor": 1.4,
+        "rotation_offset": 180,
+        "anchor_offset": -60
+    }
+}

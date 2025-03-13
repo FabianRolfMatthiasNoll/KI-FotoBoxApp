@@ -1,359 +1,491 @@
+import json
 import math
-import cv2
-from dotenv import load_dotenv
-import numpy as np
-import mediapipe as mp
 import os
-from torchvision import transforms
+import cv2
+import numpy as np
 import torch
-from openai_client import OpenAI_Client
+from dotenv import load_dotenv
+from torchvision import transforms
+
+# Import the RetinaFace detector.
+# This example uses the 'retinaface' package (pip install retinaface)
+from retinaface import RetinaFace
+
+# Import the pre-trained U²-Net model (assumed available as module u2net)
 from u2net import U2NET
 
-
-# Load U^2-Net model
-def load_u2net_model(model_path):
-    net = U2NET(3, 1)
-    net.load_state_dict(torch.load(model_path, map_location=torch.device("cuda")))
-    net.eval()
-    return net
+# Import the OpenAI client (assumed implemented in openai_client.py)
+from openai_client import OpenAI_Client
 
 
+#########################
+# Utility Functions
+#########################
 def overlay_image(background, overlay, x, y):
     """
-    Overlays an image with transparency onto a background image.
-
-    Args:
-        background (np.ndarray): The background image.
-        overlay (np.ndarray): The overlay image with an alpha channel.
-        x (int): The x-coordinate for the top-left corner of the overlay.
-        y (int): The y-coordinate for the top-left corner of the overlay.
-
-    Returns:
-        np.ndarray: The resulting image with the overlay applied.
+    Overlays an RGBA image (overlay) onto a BGR background image at position (x, y).
+    The overlay image must have an alpha channel.
     """
     h, w = overlay.shape[:2]
+    if overlay.shape[2] < 4:
+        raise ValueError("Overlay image must have an alpha channel.")
     alpha = overlay[:, :, 3] / 255.0
 
-    # Adjust for out-of-bounds coordinates
-    y_start = max(0, y)
-    y_end = min(background.shape[0], y + h)
-    x_start = max(0, x)
-    x_end = min(background.shape[1], x + w)
+    # Calculate overlay region on background
+    y1 = max(0, y)
+    y2 = min(background.shape[0], y + h)
+    x1 = max(0, x)
+    x2 = min(background.shape[1], x + w)
 
-    # Calculate the visible portion of the overlay
-    overlay_y_start = max(0, -y)
-    overlay_y_end = overlay_y_start + (y_end - y_start)
-    overlay_x_start = max(0, -x)
-    overlay_x_end = overlay_x_start + (x_end - x_start)
+    # Determine the corresponding region on the overlay image
+    overlay_y1 = max(0, -y)
+    overlay_y2 = overlay_y1 + (y2 - y1)
+    overlay_x1 = max(0, -x)
+    overlay_x2 = overlay_x1 + (x2 - x1)
 
-    for c in range(3):  # Iterate over RGB channels
-        background[y_start:y_end, x_start:x_end, c] = (
-            alpha[overlay_y_start:overlay_y_end, overlay_x_start:overlay_x_end]
-            * overlay[overlay_y_start:overlay_y_end, overlay_x_start:overlay_x_end, c]
-            + (1 - alpha[overlay_y_start:overlay_y_end, overlay_x_start:overlay_x_end])
-            * background[y_start:y_end, x_start:x_end, c]
+    # Blend the overlay with the background
+    for c in range(3):  # for each color channel
+        background[y1:y2, x1:x2, c] = (
+            alpha[overlay_y1:overlay_y2, overlay_x1:overlay_x2]
+            * overlay[overlay_y1:overlay_y2, overlay_x1:overlay_x2, c]
+            + (1 - alpha[overlay_y1:overlay_y2, overlay_x1:overlay_x2])
+            * background[y1:y2, x1:x2, c]
         )
     return background
 
 
-def preprocess_image(image):
-    """
-    Simplifies image preprocessing by normalizing brightness without over-enhancing.
-    """
-    return cv2.cvtColor(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
-
-
-def apply_background(image, background_path):
-    """
-    Replaces the background of the image using U²-Net for segmentation.
-    """
-    # Load and apply U²-Net for background removal
-    u2net_model = load_u2net_model("u2net/u2net.pth")
-    mask = remove_background(image, u2net_model)
-
-    # Load the new background
-    background = cv2.imread(background_path)
-    if background is None:
-        raise ValueError(f"Background not found: {background_path}")
-    background = cv2.resize(background, (image.shape[1], image.shape[0]))
-
-    # Ensure mask is binary
-    mask = (mask * 255).astype(np.uint8)
-    mask_inv = cv2.bitwise_not(mask)
-
-    # Extract foreground and background
-    foreground = cv2.bitwise_and(image, image, mask=mask)
-    new_background = cv2.bitwise_and(background, background, mask=mask_inv)
-
-    # Combine the two images
-    combined = cv2.add(foreground, new_background)
-    return combined
-
-
-# Background removal using U^2-Net
-def remove_background(image, model):
-    transform = transforms.Compose(
-        [
-            transforms.ToPILImage(),
-            transforms.Resize((320, 320)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ]
-    )
-    input_tensor = transform(image).unsqueeze(0)
-    with torch.no_grad():
-        d1, *_ = model(input_tensor)
-        prediction = torch.sigmoid(d1[:, 0, :, :]).squeeze().cpu().numpy()
-    mask = (prediction > 0.8).astype(np.uint8)
-    return cv2.resize(
-        mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST
-    )
-
-
-def apply_accessories(image, accessories, asset_dirs):
-    """
-    Applies accessories (hats, glasses, beards) to all faces detected using MediaPipe FaceMesh.
-    """
-    mp_face_mesh = mp.solutions.face_mesh
-    face_mesh = mp_face_mesh.FaceMesh(
-        static_image_mode=True,
-        max_num_faces=20,
-        min_detection_confidence=0.4,
-    )
-    h, w, _ = image.shape
-    annotated_image = image.copy()
-
-    results = face_mesh.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-    if not results.multi_face_landmarks:
-        print("No faces detected.")
-        return image
-
-    print(f"Number of faces detected: {len(results.multi_face_landmarks)}")
-    for face_id, face_landmarks in enumerate(results.multi_face_landmarks):
-        print(f"Processing face {face_id + 1}")
-
-        # Hat placement
-        if "hat" in accessories and accessories["hat"] != "none":
-            hat_path = os.path.join(asset_dirs["hats"], accessories["hat"] + ".png")
-            hat_image = cv2.imread(hat_path, cv2.IMREAD_UNCHANGED)
-            if hat_image is not None:
-                apply_hat_facemesh(annotated_image, face_landmarks, hat_image, w, h)
-
-        # Glasses placement (can be expanded)
-        if "glasses" in accessories and accessories["glasses"] != "none":
-            glasses_path = os.path.join(
-                asset_dirs["glasses"], accessories["glasses"] + ".png"
-            )
-            glasses_image = cv2.imread(glasses_path, cv2.IMREAD_UNCHANGED)
-            if glasses_image is not None:
-                apply_glasses_facemesh(
-                    annotated_image, face_landmarks, glasses_image, w, h
-                )
-
-        # Beard placement (can be expanded)
-        if "beard" in accessories and accessories["beard"] != "none":
-            beard_path = os.path.join(
-                asset_dirs["beards"], accessories["beard"] + ".png"
-            )
-            beard_image = cv2.imread(beard_path, cv2.IMREAD_UNCHANGED)
-            if beard_image is not None:
-                apply_beard_facemesh(annotated_image, face_landmarks, beard_image, w, h)
-
-    face_mesh.close()
-    return annotated_image
-
-
-def apply_hat_facemesh(
-    image, face_landmarks, hat_image, img_width, img_height, hat_scaling_factor=2.5
-):
-    """
-    Places a hat on the forehead using FaceMesh landmarks, accounting for tilt (pitch and yaw).
-    """
-    hat_scaling_factor = 3.0
-
-    # Key landmarks
-    forehead_landmark_ids = [10, 67, 103, 109, 338]
-    left_ear_id = 234  # Approximate position for left ear
-    right_ear_id = 454  # Approximate position for right ear
-
-    # Forehead landmarks
-    forehead_points = [
-        (
-            int(face_landmarks.landmark[l].x * img_width),
-            int(face_landmarks.landmark[l].y * img_height),
-        )
-        for l in forehead_landmark_ids
-    ]
-    x_min = min(p[0] for p in forehead_points)
-    x_max = max(p[0] for p in forehead_points)
-    y_min = min(p[1] for p in forehead_points)
-    x_center = (x_min + x_max) // 2
-
-    # Ear positions for yaw calculation
-    left_ear = face_landmarks.landmark[left_ear_id]
-    right_ear = face_landmarks.landmark[right_ear_id]
-
-    yaw_angle = math.degrees(
-        math.atan2(right_ear.y - left_ear.y, right_ear.x - left_ear.x)
-    )  # Horizontal tilt
-
-    # Adjust hat size and placement
-    hat_width = int((x_max - x_min) * hat_scaling_factor)
-    hat_height = int(hat_width * hat_image.shape[0] / hat_image.shape[1])
-    resized_hat = cv2.resize(
-        hat_image, (hat_width, hat_height), interpolation=cv2.INTER_AREA
-    )
-
-    # Rotate hat for yaw alignment
-    rotated_hat = rotate_image(resized_hat, -yaw_angle)
-    # Adjust the y-coordinate to position the hat slightly lower
-
-    y_adjustment = int(hat_height * 0.10)  # Lower the hat by 25% of its height
-    overlay_image(
-        image, rotated_hat, x_center - hat_width // 2, y_min - hat_height + y_adjustment
-    )
-
-
 def rotate_image(image, angle):
     """
-    Rotates an image by the specified angle around its center.
-
-    Args:
-        image (np.ndarray): The image to rotate.
-        angle (float): The rotation angle in degrees.
-
-    Returns:
-        np.ndarray: The rotated image.
+    Rotates an image by a given angle (in degrees) around its center.
     """
     h, w = image.shape[:2]
-    center = (w // 2, h // 2)  # Center of the image
-    # Get the rotation matrix
+    center = (w // 2, h // 2)
     rotation_matrix = cv2.getRotationMatrix2D(center, angle, scale=1.0)
-    # Perform the rotation
-    rotated_image = cv2.warpAffine(
+    rotated = cv2.warpAffine(
         image,
         rotation_matrix,
         (w, h),
         flags=cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_CONSTANT,
     )
-    return rotated_image
+    return rotated
 
 
-def apply_glasses_facemesh(image, face_landmarks, glasses_image, img_width, img_height):
-    # Use eye landmarks for glasses placement
-    left_eye_ids = [33, 133]
-    right_eye_ids = [362, 263]
-    eye_points = [
-        (
-            int(face_landmarks.landmark[l].x * img_width),
-            int(face_landmarks.landmark[l].y * img_height),
+def rotate_with_canvas(image, angle, extra=50):
+    """
+    Rotates an RGBA image by a given angle around its center, ensuring no corners
+    are cut off by first placing it on a larger transparent canvas.
+
+    Parameters:
+        image (np.ndarray): RGBA image to rotate (H x W x 4).
+        angle (float): Rotation angle in degrees.
+        extra (int): Extra padding around the image to prevent clipping.
+
+    Returns:
+        np.ndarray: The rotated image on a larger canvas, preserving all corners.
+    """
+    h, w = image.shape[:2]
+    # Create a bigger RGBA canvas (extra on each side)
+    canvas = np.zeros((h + 2 * extra, w + 2 * extra, 4), dtype=image.dtype)
+
+    # Place the original image in the center of the canvas
+    canvas[extra : extra + h, extra : extra + w, :] = image
+
+    # The new center for rotation is the center of this bigger canvas
+    center = ((w + 2 * extra) // 2, (h + 2 * extra) // 2)
+
+    # Perform rotation
+    rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+    rotated = cv2.warpAffine(
+        canvas,
+        rotation_matrix,
+        (w + 2 * extra, h + 2 * extra),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+    )
+    return rotated
+
+
+def load_hat_metadata(hat_dir):
+    """
+    Loads hat metadata from hats_metadata.json in the specified directory.
+    Returns a dictionary where keys are hat names and values are the config.
+    """
+    metadata_path = os.path.join(hat_dir, "hats_metadata.json")
+    if not os.path.isfile(metadata_path):
+        print(f"No hat metadata found at: {metadata_path}. Using defaults.")
+        return {}
+    with open(metadata_path, "r") as f:
+        try:
+            data = json.load(f)
+            return data
+        except json.JSONDecodeError as e:
+            print(f"Error parsing hats_metadata.json: {e}")
+            return {}
+
+
+#########################
+# Module: FaceDetector
+#########################
+class FaceDetector:
+    """
+    Uses RetinaFace (a pre-trained PyTorch model) to detect multiple faces and extract 5 key landmarks.
+
+    Expected landmarks from RetinaFace (for each face):
+      - "left_eye": (x, y)
+      - "right_eye": (x, y)
+      - "nose": (x, y)
+      - "mouth_left": (x, y)
+      - "mouth_right": (x, y)
+    """
+
+    def __init__(self, device=None):
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        # The RetinaFace package used here performs detection via a simple API.
+        # If you need GPU support for the PyTorch variant, ensure your installation supports it.
+        # (The current 'retinaface' package abstracts these details.)
+
+    def detect_faces(self, image):
+        """
+        Detects faces in the given image.
+        Returns a list of dictionaries, each with keys 'bbox' and 'landmarks'.
+        """
+        # The detect_faces function returns a dict with face_id keys.
+        faces_dict = RetinaFace.detect_faces(image)
+        faces = []
+        for face_id, face_data in faces_dict.items():
+            bbox = face_data["facial_area"]  # [x1, y1, x2, y2]
+            landmarks = face_data[
+                "landmarks"
+            ]  # dict with keys: "left_eye", "right_eye", etc.
+            faces.append({"bbox": bbox, "landmarks": landmarks})
+        return faces
+
+
+#########################
+# Module: BackgroundRemover
+#########################
+class BackgroundRemover:
+    """
+    Uses U²‑Net (pre-trained) to perform robust background segmentation.
+    The segmentation mask is used for alpha blending with a new background.
+    """
+
+    def __init__(self, model_path="u2net/u2net.pth", device=None):
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = U2NET(3, 1)
+        state_dict = torch.load(model_path, map_location=torch.device(self.device))
+        self.model.load_state_dict(state_dict)
+        self.model.to(self.device)
+        self.model.eval()
+        self.transform = transforms.Compose(
+            [
+                transforms.ToPILImage(),
+                transforms.Resize((320, 320)),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                ),
+            ]
         )
-        for l in left_eye_ids + right_eye_ids
-    ]
-    x_min = min(p[0] for p in eye_points)
-    x_max = max(p[0] for p in eye_points)
-    y_min = min(p[1] for p in eye_points)
-    glasses_width = x_max - x_min
-    glasses_height = int(
-        glasses_width * glasses_image.shape[0] / glasses_image.shape[1]
-    )
-    resized_glasses = cv2.resize(
-        glasses_image, (glasses_width, glasses_height), interpolation=cv2.INTER_AREA
-    )
-    overlay_image(image, resized_glasses, x_min, y_min)
 
-
-def apply_beard_facemesh(image, face_landmarks, beard_image, img_width, img_height):
-    # Use jawline landmarks for beard placement
-    jawline_landmark_ids = list(range(0, 17))
-    jawline_points = [
-        (
-            int(face_landmarks.landmark[l].x * img_width),
-            int(face_landmarks.landmark[l].y * img_height),
+    def remove_background(self, image, threshold=0.6):
+        """
+        Returns a binary mask (same width & height as image) where the foreground is 1.
+        """
+        input_tensor = self.transform(image).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            d1, *rest = self.model(input_tensor)
+            prediction = torch.sigmoid(d1[:, 0, :, :]).squeeze().cpu().numpy()
+            print(f"Prediction range: min={prediction.min()}, max={prediction.max()}")
+        mask = (prediction > threshold).astype(np.uint8)
+        mask_resized = cv2.resize(
+            mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST
         )
-        for l in jawline_landmark_ids
-    ]
-    x_min = min(p[0] for p in jawline_points)
-    x_max = max(p[0] for p in jawline_points)
-    y_max = max(p[1] for p in jawline_points)
-    beard_width = x_max - x_min
-    beard_height = int(beard_width * beard_image.shape[0] / beard_image.shape[1])
-    resized_beard = cv2.resize(
-        beard_image, (beard_width, beard_height), interpolation=cv2.INTER_AREA
-    )
-    overlay_image(image, resized_beard, x_min, y_max - beard_height)
+        return mask_resized
 
 
-# Main Function
+#########################
+# Module: AccessoryPlacer
+#########################
+class AccessoryPlacer:
+    """
+    Places accessories (hats and glasses) on a face based on detected landmarks.
+
+    The accessory images must be prepared as described in the guidelines:
+      - PNG format with transparent background.
+      - Tightly cropped, with a clear anchor point (bottom center for hats, center for glasses).
+    """
+
+    def __init__(self, asset_dirs):
+        """
+        asset_dirs: dictionary with keys 'hats', 'glasses', 'backgrounds' etc.
+        """
+        self.asset_dirs = asset_dirs
+        self.hat_metadata = load_hat_metadata(asset_dirs["hats"])
+
+    def apply_hat(
+        self,
+        image,
+        face_info,
+        hat_name,
+        default_scale_factor=1.5,
+        default_rotation_offset=180,
+    ):
+        """
+        Places a hat accessory on the face using a mix of head pose + metadata-based scaling/offset.
+
+        Parameters:
+            image (np.ndarray): Original BGR image.
+            face_info (dict): Dict with keys 'bbox' and 'landmarks' (x1,y1,x2,y2 plus 5+2D points).
+            hat_name (str): Name of the hat asset (without extension).
+            default_scale_factor (float): fallback if metadata not found
+            default_rotation_offset (float): fallback rotation offset
+
+        Returns:
+            np.ndarray: The image with the hat overlaid.
+        """
+        # Load the hat asset
+        hat_path = os.path.join(self.asset_dirs["hats"], hat_name + ".png")
+        hat_img = cv2.imread(hat_path, cv2.IMREAD_UNCHANGED)
+        if hat_img is None:
+            print(f"Hat image not found: {hat_path}")
+            return image
+
+        # Read metadata or fall back
+        meta = self.hat_metadata.get(hat_name, {})
+        scale_mode = meta.get("scale_mode", "width")  # "width" or "height"
+        scale_factor = meta.get("scale_factor", default_scale_factor)
+        rotation_offset = meta.get("rotation_offset", default_rotation_offset)
+        anchor_offset = meta.get("anchor_offset", 0)
+
+        # Retrieve bounding box & landmarks
+        bbox = face_info["bbox"]  # [x1, y1, x2, y2]
+        landmarks = face_info["landmarks"]
+
+        left_eye = landmarks["left_eye"]
+        right_eye = landmarks["right_eye"]
+
+        x1, y1, x2, y2 = bbox
+        face_width = x2 - x1
+        face_height = y2 - y1
+
+        # Compute angle from eye line
+        angle = math.degrees(
+            math.atan2(right_eye[1] - left_eye[1], right_eye[0] - left_eye[0])
+        )
+        # final angle for the hat
+        final_angle = -angle + rotation_offset
+
+        # Scale the hat
+        if scale_mode == "width":
+            # Scale by face width
+            hat_width = int(face_width * scale_factor)
+            hat_height = int(hat_width * hat_img.shape[0] / hat_img.shape[1])
+        else:
+            # scale_mode == "height"
+            hat_height = int(face_height * scale_factor)
+            hat_width = int(hat_height * (hat_img.shape[1] / hat_img.shape[0]))
+
+        resized_hat = cv2.resize(
+            hat_img, (hat_width, hat_height), interpolation=cv2.INTER_AREA
+        )
+
+        # Rotate the hat
+        padding_value = 50
+        rotated_hat = rotate_with_canvas(resized_hat, final_angle, extra=padding_value)
+
+        # 7) Determine anchor point for the brim
+        # We'll place the brim at y1 (top of face bounding box) minus anchor_offset
+        # so the brim sits slightly above the top. Adjust as needed.
+        brim_y = y1 - anchor_offset
+        # horizontally, we center it on the face
+        face_center_x = int((left_eye[0] + right_eye[0]) / 2.0)
+
+        angle_radians = math.radians(angle)
+        sin_term = math.sin(angle_radians)
+        delta_y = right_eye[1] - left_eye[1]
+
+        # Weighted combination
+        x_offset = int(0.1 * hat_width * sin_term + 0.15 * delta_y)
+
+        # 8) Place the hat so its bottom aligns with brim_y
+        x = face_center_x - (rotated_hat.shape[1] // 2) - 3 * x_offset
+        y = brim_y - rotated_hat.shape[0] + padding_value
+
+        # 9) Overlay
+        result = overlay_image(image, rotated_hat, x, y)
+        return result
+
+    def apply_glasses(self, image, landmarks, glasses_name):
+        """
+        Places glasses on the face.
+        The glasses are scaled based on the inter-eye distance and rotated to match head tilt.
+        """
+        glasses_path = os.path.join(self.asset_dirs["glasses"], glasses_name + ".png")
+        glasses_img = cv2.imread(glasses_path, cv2.IMREAD_UNCHANGED)
+        if glasses_img is None:
+            print(f"Glasses image not found: {glasses_path}")
+            return image
+
+        left_eye = landmarks["left_eye"]
+        right_eye = landmarks["right_eye"]
+        center_x = int((left_eye[0] + right_eye[0]) / 2)
+        center_y = int((left_eye[1] + right_eye[1]) / 2)
+        eye_distance = np.linalg.norm(np.array(left_eye) - np.array(right_eye))
+
+        # Scale glasses slightly larger than the distance between eyes
+        glasses_width = int(eye_distance * 1.5)
+        glasses_height = int(
+            glasses_width * glasses_img.shape[0] / glasses_img.shape[1]
+        )
+        resized_glasses = cv2.resize(
+            glasses_img, (glasses_width, glasses_height), interpolation=cv2.INTER_AREA
+        )
+        angle = math.degrees(
+            math.atan2(right_eye[1] - left_eye[1], right_eye[0] - left_eye[0])
+        )
+        rotated_glasses = rotate_image(resized_glasses, -angle)
+
+        x = center_x - glasses_width // 2
+        y = center_y - glasses_height // 2
+        result = overlay_image(image, rotated_glasses, x, y)
+        return result
+
+    def apply_accessories(self, image, face_info, accessories):
+        """
+        Applies the specified accessories to the image for one detected face.
+
+        accessories: dict with keys such as "hat", "glasses" (values are asset names or "none")
+        """
+        landmarks = face_info["landmarks"]
+        if accessories.get("hat", "none") != "none":
+            image = self.apply_hat(image, face_info, accessories["hat"])
+        if accessories.get("glasses", "none") != "none":
+            image = self.apply_glasses(image, landmarks, accessories["glasses"])
+        return image
+
+
+#########################
+# Module: Pipeline Orchestrator
+#########################
+class ImagePipeline:
+    """
+    Main pipeline that combines face detection, background removal, accessory placement,
+    and optional style suggestions (via OpenAI) into a single processing flow.
+    """
+
+    def __init__(self, asset_dirs, u2net_model_path, openai_api_key, device=None):
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.face_detector = FaceDetector(device=self.device)
+        self.bg_remover = BackgroundRemover(
+            model_path=u2net_model_path, device=self.device
+        )
+        self.accessory_placer = AccessoryPlacer(asset_dirs)
+        self.openai_client = OpenAI_Client(openai_api_key, "gpt-4o")
+
+    def process_image(self, image_path):
+        """
+        Processes the image:
+          - Detects faces
+          - Optionally replaces background
+          - Applies accessories based on suggestions from OpenAI
+
+        Returns a list of resulting images (one per suggestion).
+        """
+        image = cv2.imread(image_path)
+        if image is None:
+            raise ValueError("Image not found: " + image_path)
+
+        # Get suggestions from OpenAI (expects a tag_prompt.txt file to exist)
+        with open("tag_prompt.txt", "r", encoding="utf-8") as f:
+            prompt = f.read().strip()
+        suggestions = self.openai_client.describe_image_with_retry(image_path, prompt)
+        if not suggestions:
+            print("No valid suggestions received; using default accessories.")
+            suggestions = [{"Background": "none", "Hats": "none", "Glasses": "none"}]
+
+        # Detect faces in the image using RetinaFace
+        faces = self.face_detector.detect_faces(image)
+        if not faces:
+            print("No faces detected.")
+            return [image]
+
+        results = []
+        for idx, suggestion in enumerate(suggestions):
+            edited_image = image.copy()
+
+            # --- Background Replacement ---
+            if suggestion.get("Background", "none") != "none":
+                bg_path = os.path.join(
+                    self.accessory_placer.asset_dirs["background"],
+                    suggestion["Background"] + ".jpg",
+                )
+                bg_img = cv2.imread(bg_path)
+                if bg_img is None:
+                    print(
+                        f"Background {bg_path} not found; skipping background replacement."
+                    )
+                else:
+                    bg_img = cv2.resize(
+                        bg_img, (edited_image.shape[1], edited_image.shape[0])
+                    )
+                    mask = self.bg_remover.remove_background(edited_image)
+                    mask_inv = cv2.bitwise_not(mask)
+                    fg = cv2.bitwise_and(edited_image, edited_image, mask=mask)
+                    new_bg = cv2.bitwise_and(bg_img, bg_img, mask=mask_inv)
+                    edited_image = cv2.add(fg, new_bg)
+
+            # --- Accessory Placement ---
+            accessories = {
+                "hat": suggestion.get("Hats", "none"),
+                "glasses": suggestion.get("Glasses", "none"),
+            }
+            for face_info in faces:
+                edited_image = self.accessory_placer.apply_accessories(
+                    edited_image, face_info, accessories
+                )
+            # Save and store result
+            output_path = f"./output/result_{idx+1}.jpg"
+            cv2.imwrite(output_path, edited_image)
+            print(f"Saved result to {output_path}")
+            results.append(edited_image)
+        return results
+
+
+#########################
+# Main Execution
+#########################
 def main():
     load_dotenv()
     API_KEY = os.getenv("OPEN_AI_API_KEY") or ""
 
-    # Initialize OpenAI client
-    openai_client = OpenAI_Client(API_KEY, "gpt-4o")
-
-    # Load input image
-    input_image_path = "test_images/four-friends.jpg"
-    image = cv2.imread(input_image_path)
-    if image is None:
-        raise ValueError("Image not found: " + input_image_path)
-
-    # image = preprocess_image(image)
-
-    # Get suggestions from OpenAI
-    prompt = open("tag_prompt.txt", "r").read()
-    suggestions = openai_client.describe_image_with_retry(input_image_path, prompt)
-    print(
-        "============================================================================================="
-    )
-    print(
-        "============================================================================================="
-    )
-    print(f"Extracted Suggestions: {suggestions}")
-    print(
-        "============================================================================================="
-    )
-    print(
-        "============================================================================================="
-    )
-
-    # Asset directories
+    # Define asset directories (adjust paths as needed)
     asset_dirs = {
         "background": "backgrounds",
         "hats": "hats",
-        "glasses": "glasses",
-        "beards": "beards",
+        # "glasses": "glasses",
+        # Optionally add more accessory types here (e.g., "beards": "beards")
     }
+    # Ensure output directory exists
+    os.makedirs("./output", exist_ok=True)
 
-    # Process suggestions
-    for i, suggestion in enumerate(suggestions):
-        edited_image = image.copy()
+    # Initialize the pipeline (ensure paths to models and assets are correct)
+    pipeline = ImagePipeline(
+        asset_dirs=asset_dirs,
+        u2net_model_path="u2net/u2net.pth",
+        openai_api_key=API_KEY,
+    )
 
-        # Apply background
-        if suggestion["Background"] != "none":
-            edited_image = apply_background(
-                edited_image,
-                os.path.join(
-                    asset_dirs["background"], suggestion["Background"] + ".jpg"
-                ),
-            )
+    # Path to the input image (from backend)
+    input_image_path = "test_images/four-friends.jpg"
+    results = pipeline.process_image(input_image_path)
 
-        # Apply accessories
-        accessories = {
-            "hat": suggestion["Hats"],
-            "glasses": "none",  # Placeholder if suggestions include glasses
-            "beard": "none",  # Placeholder if suggestions include beards
-        }
-        edited_image = apply_accessories(edited_image, accessories, asset_dirs)
-
-        # Save output
-        output_path = f"./output/result_{i+1}.jpg"
-        cv2.imwrite(output_path, edited_image)
-        cv2.imshow(f"Suggestion {i+1}", edited_image)
-        print(f"Saved: {output_path}")
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
+    # Optionally display results (close windows by pressing any key)
+    for idx, res in enumerate(results):
+        cv2.imshow(f"Result {idx+1}", res)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
