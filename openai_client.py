@@ -52,6 +52,7 @@ class OpenAI_Client:
             suggestion = {
                 "Background": "none",
                 "Hats": {},
+                "Glasses": {},
                 "Effects": "none",
             }
 
@@ -64,6 +65,10 @@ class OpenAI_Client:
                 hats_match = re.search(r"\[Hats\]:\s*([^\n]+)", match)
                 if hats_match:
                     suggestion["Hats"] = hats_match.group(1).strip()
+
+                glasses_match = re.search(r"\[Glasses\]:\s*([^\n]+)", match)
+                if glasses_match:
+                    suggestion["Glasses"] = glasses_match.group(1).strip()
 
                 effects_match = re.search(r"\[Effects\]:\s*([^\n]+)", match)
                 if effects_match:

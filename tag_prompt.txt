@@ -5,8 +5,11 @@ Keyword Format for Text Extraction:
 [Background]: Select one of the following tags for the background.
 Options: [beach, sunset, space, none]
 
-[Hats]: For the group or each individual, suggest a hat or select "none".
+[Hats]: For the group suggest a hat or select "none".
 Options: [party_hat, crown, cowboy_hat, none]
+
+[Glasses]: Apply a set of glasses to the group ore select "none"
+Options: [glasses_clown_nose, glasses_googley_eyes, glasses_nose_mustache, none]
 
 [Effects]: Suggest a visual effect to apply to the whole image or select "none".
 Options: [confetti, sparkles, spotlight, none]
@@ -16,16 +19,19 @@ Example Output:
 Suggestion 1:
 [Background]: sunset
 [Hats]: party_hat
+[Glasses]: glasses_googley_eyes
 [Effects]: confetti
 
 Suggestion 2:
 [Background]: none
 [Hats]: cowboy_hat
+[Glasses]: none
 [Effects]: spotlight
 
 Suggestion 3:
 [Background]: beach
 [Hats]: none
+[Glasses]: glasses_clown_nose
 [Effects]: none
 
 Important: Ensure that:

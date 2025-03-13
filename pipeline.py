@@ -124,6 +124,20 @@ def load_hat_metadata(hat_dir):
             return {}
 
 
+def load_glasses_metadata(glasses_dir):
+    metadata_path = os.path.join(glasses_dir, "glasses_metadata.json")
+    if not os.path.isfile(metadata_path):
+        print(f"No glasses metadata found at: {metadata_path}. Using defaults.")
+        return {}
+    with open(metadata_path, "r") as f:
+        try:
+            data = json.load(f)
+            return data
+        except json.JSONDecodeError as e:
+            print(f"Error parsing glasses_metadata.json: {e}")
+            return {}
+
+
 #########################
 # Module: FaceDetector
 #########################
@@ -189,16 +203,13 @@ class BackgroundRemover:
             ]
         )
 
-    def remove_background(self, image, threshold=0.6):
-        """
-        Returns a binary mask (same width & height as image) where the foreground is 1.
-        """
+    def remove_background(self, image, threshold=0.7):
         input_tensor = self.transform(image).unsqueeze(0).to(self.device)
         with torch.no_grad():
             d1, *rest = self.model(input_tensor)
             prediction = torch.sigmoid(d1[:, 0, :, :]).squeeze().cpu().numpy()
             print(f"Prediction range: min={prediction.min()}, max={prediction.max()}")
-        mask = (prediction > threshold).astype(np.uint8)
+        mask = (prediction > threshold).astype(np.uint8) * 255
         mask_resized = cv2.resize(
             mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST
         )
@@ -223,6 +234,7 @@ class AccessoryPlacer:
         """
         self.asset_dirs = asset_dirs
         self.hat_metadata = load_hat_metadata(asset_dirs["hats"])
+        self.glasses_metadata = load_glasses_metadata(asset_dirs["glasses"])
 
     def apply_hat(
         self,
@@ -317,39 +329,88 @@ class AccessoryPlacer:
         result = overlay_image(image, rotated_hat, x, y)
         return result
 
-    def apply_glasses(self, image, landmarks, glasses_name):
+    def apply_glasses(self, image, face_info, glasses_name, default_scale_factor=1.0):
         """
-        Places glasses on the face.
-        The glasses are scaled based on the inter-eye distance and rotated to match head tilt.
+        Places glasses on the face using metadata for alignment.
+        This version supports a new scale mode "head_width" which scales glasses
+        nearly as wide as the face.
         """
+        # Load the glasses asset
         glasses_path = os.path.join(self.asset_dirs["glasses"], glasses_name + ".png")
         glasses_img = cv2.imread(glasses_path, cv2.IMREAD_UNCHANGED)
         if glasses_img is None:
             print(f"Glasses image not found: {glasses_path}")
             return image
 
+        # Retrieve metadata
+        meta = self.glasses_metadata.get(glasses_name, {})
+        anchor_x = meta.get("anchor_x", glasses_img.shape[1] // 2)
+        anchor_y = meta.get("anchor_y", glasses_img.shape[0] // 2)
+        scale_mode = meta.get("scale_mode", "head_width")  # now default to "head_width"
+        scale_factor = meta.get("scale_factor", default_scale_factor)
+        rotation_offset = meta.get("rotation_offset", 0)
+        offset_x = meta.get("offset_x", 0)
+        offset_y = meta.get("offset_y", 0)
+
+        # Retrieve landmarks; we also need face bbox to estimate head width.
+        face_info_bbox = face_info.get("bbox", None)
+        landmarks = face_info["landmarks"]
         left_eye = landmarks["left_eye"]
         right_eye = landmarks["right_eye"]
-        center_x = int((left_eye[0] + right_eye[0]) / 2)
-        center_y = int((left_eye[1] + right_eye[1]) / 2)
-        eye_distance = np.linalg.norm(np.array(left_eye) - np.array(right_eye))
 
-        # Scale glasses slightly larger than the distance between eyes
-        glasses_width = int(eye_distance * 1.5)
-        glasses_height = int(
-            glasses_width * glasses_img.shape[0] / glasses_img.shape[1]
-        )
+        # Eye midpoint: where we want the glasses' bridge to align.
+        eye_center_x = (left_eye[0] + right_eye[0]) / 2.0
+        eye_center_y = (left_eye[1] + right_eye[1]) / 2.0
+
+        # Determine base scale
+        if scale_mode == "eye_distance":
+            eye_distance = np.linalg.norm(np.array(left_eye) - np.array(right_eye))
+            base_width = glasses_img.shape[1]
+            scale = (eye_distance / base_width) * scale_factor
+        elif scale_mode == "head_width":
+            if face_info_bbox:
+                x1, y1, x2, y2 = face_info_bbox
+                face_width = x2 - x1
+            else:
+                # Fallback: estimate head width as 2.5 * eye distance
+                eye_distance = np.linalg.norm(np.array(left_eye) - np.array(right_eye))
+                face_width = 2.5 * eye_distance
+            scale = (face_width / glasses_img.shape[1]) * scale_factor
+        elif scale_mode == "width":
+            # You could add additional modes here if needed.
+            scale = scale_factor
+        else:
+            scale = scale_factor
+
+        # Resize glasses based on computed scale
+        new_width = int(glasses_img.shape[1] * scale)
+        new_height = int(glasses_img.shape[0] * scale)
         resized_glasses = cv2.resize(
-            glasses_img, (glasses_width, glasses_height), interpolation=cv2.INTER_AREA
+            glasses_img, (new_width, new_height), interpolation=cv2.INTER_AREA
         )
+
+        # Compute rotation from the eye line
         angle = math.degrees(
             math.atan2(right_eye[1] - left_eye[1], right_eye[0] - left_eye[0])
         )
-        rotated_glasses = rotate_image(resized_glasses, -angle)
+        # Adjust angle by rotation_offset; add 180 if needed for proper orientation
+        final_angle = -angle + rotation_offset + 180
 
-        x = center_x - glasses_width // 2
-        y = center_y - glasses_height // 2
-        result = overlay_image(image, rotated_glasses, x, y)
+        # Use rotate_with_canvas to avoid cutoffs
+        padded_rotated = rotate_with_canvas(resized_glasses, final_angle, extra=50)
+
+        # Compute the anchor in the rotated image.
+        # The anchor in the original resized image is (anchor_x * scale, anchor_y * scale).
+        # After padding, add the extra padding value (50).
+        anchor_x_scaled = anchor_x * scale + 50
+        anchor_y_scaled = anchor_y * scale + 50
+
+        # Place the glasses so that the anchor lands at the eye center,
+        # with additional offsets if defined.
+        x = int(eye_center_x - anchor_x_scaled + offset_x)
+        y = int(eye_center_y - anchor_y_scaled + offset_y)
+
+        result = overlay_image(image, padded_rotated, x, y)
         return result
 
     def apply_accessories(self, image, face_info, accessories):
@@ -358,11 +419,10 @@ class AccessoryPlacer:
 
         accessories: dict with keys such as "hat", "glasses" (values are asset names or "none")
         """
-        landmarks = face_info["landmarks"]
         if accessories.get("hat", "none") != "none":
             image = self.apply_hat(image, face_info, accessories["hat"])
         if accessories.get("glasses", "none") != "none":
-            image = self.apply_glasses(image, landmarks, accessories["glasses"])
+            image = self.apply_glasses(image, face_info, accessories["glasses"])
         return image
 
 
@@ -401,6 +461,7 @@ class ImagePipeline:
         with open("tag_prompt.txt", "r", encoding="utf-8") as f:
             prompt = f.read().strip()
         suggestions = self.openai_client.describe_image_with_retry(image_path, prompt)
+        print("Received suggestions:", suggestions)
         if not suggestions:
             print("No valid suggestions received; using default accessories.")
             suggestions = [{"Background": "none", "Hats": "none", "Glasses": "none"}]
@@ -464,7 +525,7 @@ def main():
     asset_dirs = {
         "background": "backgrounds",
         "hats": "hats",
-        # "glasses": "glasses",
+        "glasses": "glasses",
         # Optionally add more accessory types here (e.g., "beards": "beards")
     }
     # Ensure output directory exists

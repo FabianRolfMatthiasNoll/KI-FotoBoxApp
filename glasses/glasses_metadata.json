@@ -1,0 +1,29 @@
+{
+  "glasses_clown_nose": {
+    "anchor_x": 643,
+    "anchor_y": 236,
+    "scale_mode": "head_width",
+    "scale_factor": 1.0,
+    "rotation_offset": 0,
+    "offset_x": 0,
+    "offset_y": 0
+  },
+  "glasses_googley_eyes": {
+    "anchor_x": 299,
+    "anchor_y": 131,
+    "scale_mode": "head_width",
+    "scale_factor": 1.0,
+    "rotation_offset": 0,
+    "offset_x": 0,
+    "offset_y": 0
+  },
+  "glasses_nose_mustache": {
+    "anchor_x": 452,
+    "anchor_y": 309,
+    "scale_mode": "head_width",
+    "scale_factor": 1.0,
+    "rotation_offset": 0,
+    "offset_x": 0,
+    "offset_y": 0
+  }
+}
