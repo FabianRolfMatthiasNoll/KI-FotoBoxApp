@@ -54,6 +54,30 @@ def overlay_image(background, overlay, x, y):
     return background
 
 
+def composite_background(original, alpha, new_bg):
+    """
+    Composites the original image over new_bg using 'alpha' as a soft mask in [0,1].
+    alpha=1 => original pixel, alpha=0 => background pixel.
+    Both 'original' and 'new_bg' should be BGR images of the same size.
+    """
+    # Ensure shapes match
+    h, w = original.shape[:2]
+    new_bg = cv2.resize(new_bg, (w, h))
+
+    # Expand alpha to 3 channels so we can multiply
+    alpha_3ch = np.dstack([alpha, alpha, alpha])
+
+    # Convert images to float for blending
+    foreground_float = original.astype(np.float32)
+    background_float = new_bg.astype(np.float32)
+    alpha_float = alpha_3ch.astype(np.float32)
+
+    # Soft blend: out = alpha*foreground + (1-alpha)*background
+    composite = alpha_float * foreground_float + (1 - alpha_float) * background_float
+    composite = composite.astype(np.uint8)
+    return composite
+
+
 def rotate_image(image, angle):
     """
     Rotates an image by a given angle (in degrees) around its center.
@@ -203,17 +227,37 @@ class BackgroundRemover:
             ]
         )
 
-    def remove_background(self, image, threshold=0.7):
+    def normPRED(self, d):
+        """
+        Normalizes the prediction map to [0,1].
+        """
+        ma = torch.max(d)
+        mi = torch.min(d)
+        dn = (d - mi) / (ma - mi)
+        return dn
+
+    def remove_background(self, image):
+        original_size = (image.shape[1], image.shape[0])
         input_tensor = self.transform(image).unsqueeze(0).to(self.device)
         with torch.no_grad():
             d1, *rest = self.model(input_tensor)
-            prediction = torch.sigmoid(d1[:, 0, :, :]).squeeze().cpu().numpy()
-            print(f"Prediction range: min={prediction.min()}, max={prediction.max()}")
-        mask = (prediction > threshold).astype(np.uint8) * 255
-        mask_resized = cv2.resize(
-            mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST
-        )
-        return mask_resized
+            pred = d1[:, 0, :, :]
+            pred = self.normPRED(pred)
+            pred_np = pred.squeeze().cpu().numpy()
+
+        mask = cv2.resize(pred_np, original_size, interpolation=cv2.INTER_LINEAR)
+        mask = (mask * 255).astype(np.uint8)
+
+        # Apply a threshold to obtain a binary mask.
+        _, binary_mask = cv2.threshold(mask, 128, 255, cv2.THRESH_BINARY)
+
+        # Optionally, use morphological operations to clean up the mask.
+        kernel = np.ones((5, 5), np.uint8)
+        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel)
+
+        # Save the final mask.
+        cv2.imwrite("mask.png", binary_mask)
+        return binary_mask
 
 
 #########################
