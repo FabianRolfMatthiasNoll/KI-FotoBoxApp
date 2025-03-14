@@ -1,0 +1,53 @@
+Short Summary of Key Problems & Solutions
+Below is a concise list of the major issues you faced and how you solved them, which you can integrate into your thesis or final documentation.
+
+Python Version / Mediapipe Incompatibility
+
+Problem: MediaPipe only supported up to Python 3.12, but you were on Python 3.13.
+Solution: Switched to a RetinaFace-based face detection for robust multi-face detection and 5-landmark extraction.
+Hat Orientation (Rotated 180°)
+
+Problem: Hats appeared upside-down or reversed.
+Solution: Adjusted the final rotation angle with an additional +180° offset (or removed the negative sign) to correct orientation.
+Hat Cut-Off After Rotation
+
+Problem: Rotated hats were clipped because OpenCV’s warpAffine keeps the same bounding box.
+Solution: Used a larger transparent canvas before rotation (e.g. rotate_with_canvas) so the entire hat remains visible.
+Hat Placement Accuracy
+
+Problem: Hats were often misaligned (too big, too small, or drifting with head tilt).
+Solution: Introduced metadata (JSON) specifying scale mode (width or height), scale factors, offsets, etc. We also used heuristics (like adjusting the x-offset for tilt) to fine-tune placement.
+Glasses Placement & Anchor
+
+Problem: Funny glasses with attached noses or wide frames needed different anchors and scaling.
+Solution: Implemented per-asset metadata with an “anchor_x”/“anchor_y,” plus new scale modes like "head_width". A small script allows clicking on the “bridge” in each PNG to save anchor data automatically.
+People or Accessories Getting Cropped
+
+Problem: When rotating or placing accessories, edges were cut off if they extended outside the bounding box.
+Solution: For hats and glasses, used rotate_with_canvas with extra padding to preserve corners.
+Blocky Background Removal
+
+Problem: Using a hard threshold on the U²‑Net mask led to jagged or pixelated edges around the subject.
+Solution: Adopted soft alpha compositing by skipping the threshold and blending with a float alpha in [0,1]. Optionally applying a gamma or partial threshold to keep the center opaque but preserve soft edges for hair, etc.
+Transparent People with Soft Alpha
+
+Problem: The subject looked partially see-through after alpha blending.
+Solution: Strengthened alpha in the interior by applying a power transform (e.g. alpha = alpha**0.3) or partial clamping so the subject remains opaque while edges remain smoothly feathered.
+
+Background Replacement – Blocky Mask:
+Problem: The original U²‑Net mask, when thresholded, produced blocky, jagged edges.
+Solution: Adopted a soft alpha compositing approach by upsampling U²‑Net’s output with smooth interpolation (INTER_CUBIC) to get a continuous mask.
+
+Background Replacement – Washed Out Subject & Partial Transparency:
+Problem: Using the soft mask directly resulted in the subject (and sometimes the background) appearing washed out or partially transparent.
+Solution:
+
+Initially, attempts were made to apply a power transform to push alpha values toward full opacity; however, that led to a washed-out look.
+Final Solution: Instead of re‑running face detection to force opacity, we post‑process the original blocky mask by applying morphological closing to fill holes, followed by a Gaussian blur to smooth edges. Then, we re‑clamp (threshold) the mask so that high-confidence areas become fully opaque and low-confidence areas fully transparent. This yields a natural, smooth alpha matte without washed‑out colors.
+
+Problem: Different hat assets have varying internal designs (e.g. some have a wide inner portion or a non-centered nose/bridge) making uniform placement challenging.
+Solution:
+Developed a standalone tool to manually annotate each hat asset by marking the left border, right border, and lower brim of the inner hat area.
+These three points are stored in a JSON metadata file.
+In the pipeline, the left and right border points can be scaled relative to the head’s width, and the midpoint (computed from these or directly the marked lower brim) is used as an anchor to position the hat slightly above eye level.
+The same rotation adjustments applied to glasses are then applied to hats using this metadata.

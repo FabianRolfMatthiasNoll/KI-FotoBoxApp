@@ -1,20 +1,78 @@
 {
-    "party_hat": {
-        "scale_mode": "height",
-        "scale_factor": 1.2,
-        "rotation_offset": 180,
-        "anchor_offset": -60
-    },
-    "cowboy_hat": {
-        "scale_mode": "width",
-        "scale_factor": 2.3,
-        "rotation_offset": 180,
-        "anchor_offset": -100
-    },
-    "crown": {
-        "scale_mode": "width",
-        "scale_factor": 1.4,
-        "rotation_offset": 180,
-        "anchor_offset": -60
-    }
+  "cowboy_hat": {
+    "left_border": [
+      735,
+      969
+    ],
+    "right_border": [
+      2149,
+      990
+    ],
+    "brim": [
+      1449,
+      1103
+    ],
+    "scale_mode": "width",
+    "scale_factor": 1.0,
+    "rotation_offset": 0,
+    "offset_x": 0,
+    "offset_y": 0
+  },
+  "crown": {
+    "left_border": [
+      103,
+      1038
+    ],
+    "right_border": [
+      1355,
+      1038
+    ],
+    "brim": [
+      718,
+      1030
+    ],
+    "scale_mode": "width",
+    "scale_factor": 1.0,
+    "rotation_offset": 0,
+    "offset_x": 0,
+    "offset_y": 0
+  },
+  "hat": {
+    "left_border": [
+      240,
+      678
+    ],
+    "right_border": [
+      956,
+      688
+    ],
+    "brim": [
+      642,
+      724
+    ],
+    "scale_mode": "width",
+    "scale_factor": 1.0,
+    "rotation_offset": 0,
+    "offset_x": 0,
+    "offset_y": 0
+  },
+  "party_hat": {
+    "left_border": [
+      20,
+      1546
+    ],
+    "right_border": [
+      976,
+      1519
+    ],
+    "brim": [
+      525,
+      1628
+    ],
+    "scale_mode": "width",
+    "scale_factor": 1.0,
+    "rotation_offset": 0,
+    "offset_x": 0,
+    "offset_y": 0
+  }
 }

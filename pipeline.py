@@ -21,7 +21,7 @@ from openai_client import OpenAI_Client
 #########################
 # Utility Functions
 #########################
-def overlay_image(background, overlay, x, y):
+def overlay_image(background: np.ndarray, overlay, x, y):
     """
     Overlays an RGBA image (overlay) onto a BGR background image at position (x, y).
     The overlay image must have an alpha channel.
@@ -95,7 +95,7 @@ def rotate_image(image, angle):
     return rotated
 
 
-def rotate_with_canvas(image, angle, extra=50):
+def rotate_with_canvas(image: np.ndarray, angle: float, extra=50):
     """
     Rotates an RGBA image by a given angle around its center, ensuring no corners
     are cut off by first placing it on a larger transparent canvas.
@@ -280,100 +280,115 @@ class AccessoryPlacer:
         self.hat_metadata = load_hat_metadata(asset_dirs["hats"])
         self.glasses_metadata = load_glasses_metadata(asset_dirs["glasses"])
 
-    def apply_hat(
-        self,
-        image,
-        face_info,
-        hat_name,
-        default_scale_factor=1.5,
-        default_rotation_offset=180,
-    ):
+    def apply_hat(self, image: np.ndarray, face_info: dict, hat_name: str):
         """
-        Places a hat accessory on the face using a mix of head pose + metadata-based scaling/offset.
+        Places a hat accessory on the face using three metadata points:
+        - left_border: left border of the inner hat part
+        - right_border: right border of the inner hat part
+        - brim: lower brim (anchor) of the hat
+
+        The left/right border distance is scaled to match the face's width. The (scaled) brim point is then aligned
+        to a target position computed from the eyes, by moving upward (in the head’s coordinate frame) a distance
+        proportional to the inter-eye distance.
 
         Parameters:
-            image (np.ndarray): Original BGR image.
-            face_info (dict): Dict with keys 'bbox' and 'landmarks' (x1,y1,x2,y2 plus 5+2D points).
-            hat_name (str): Name of the hat asset (without extension).
-            default_scale_factor (float): fallback if metadata not found
-            default_rotation_offset (float): fallback rotation offset
+        image (np.ndarray): Original BGR image.
+        face_info (dict): Contains "bbox" and "landmarks".
+        hat_name (str): Name of the hat asset (without extension).
 
         Returns:
-            np.ndarray: The image with the hat overlaid.
+        np.ndarray: The image with the hat overlaid.
         """
-        # Load the hat asset
+        # Load the hat asset.
         hat_path = os.path.join(self.asset_dirs["hats"], hat_name + ".png")
         hat_img = cv2.imread(hat_path, cv2.IMREAD_UNCHANGED)
         if hat_img is None:
             print(f"Hat image not found: {hat_path}")
             return image
 
-        # Read metadata or fall back
+        # Load metadata for this hat.
         meta = self.hat_metadata.get(hat_name, {})
-        scale_mode = meta.get("scale_mode", "width")  # "width" or "height"
-        scale_factor = meta.get("scale_factor", default_scale_factor)
-        rotation_offset = meta.get("rotation_offset", default_rotation_offset)
-        anchor_offset = meta.get("anchor_offset", 0)
+        try:
+            left_border = np.array(meta["left_border"], dtype=float)
+            right_border = np.array(meta["right_border"], dtype=float)
+            brim = np.array(meta["brim"], dtype=float)
+        except KeyError:
+            print(
+                f"Missing anchor points in metadata for {hat_name}. Using default anchor (bottom-center)."
+            )
+            left_border = np.array([0, hat_img.shape[0] // 2], dtype=float)
+            right_border = np.array(
+                [hat_img.shape[1], hat_img.shape[0] // 2], dtype=float
+            )
+            brim = np.array([hat_img.shape[1] / 2, hat_img.shape[0]], dtype=float)
 
-        # Retrieve bounding box & landmarks
+        scale_mode = meta.get("scale_mode", "width")
+        scale_factor = 1.2
+        rotation_offset = meta.get("rotation_offset")
+
+        # Compute asset inner width (distance between left and right border).
+        asset_inner_width = np.linalg.norm(right_border - left_border)
+
+        # Retrieve face info.
         bbox = face_info["bbox"]  # [x1, y1, x2, y2]
         landmarks = face_info["landmarks"]
+        left_eye = np.array(landmarks["left_eye"], dtype=float)
+        right_eye = np.array(landmarks["right_eye"], dtype=float)
+        face_width = bbox[2] - bbox[0]
 
-        left_eye = landmarks["left_eye"]
-        right_eye = landmarks["right_eye"]
+        # Determine scaling factor.
+        if scale_mode == "width":
+            scale = (face_width / asset_inner_width) * scale_factor
+        else:
+            face_height = bbox[3] - bbox[1]
+            scale = (face_height / hat_img.shape[0]) * scale_factor
 
-        x1, y1, x2, y2 = bbox
-        face_width = x2 - x1
-        face_height = y2 - y1
+        # Resize the hat asset.
+        new_w = int(hat_img.shape[1] * scale)
+        new_h = int(hat_img.shape[0] * scale)
+        resized_hat = cv2.resize(hat_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-        # Compute angle from eye line
+        # Compute the scaled anchor (the brim point).
+        brim_scaled = brim * scale
+
+        # Compute rotation from the eye line.
         angle = math.degrees(
             math.atan2(right_eye[1] - left_eye[1], right_eye[0] - left_eye[0])
         )
-        # final angle for the hat
-        final_angle = -angle + rotation_offset
+        final_angle = -angle + rotation_offset + 180
 
-        # Scale the hat
-        if scale_mode == "width":
-            # Scale by face width
-            hat_width = int(face_width * scale_factor)
-            hat_height = int(hat_width * hat_img.shape[0] / hat_img.shape[1])
-        else:
-            # scale_mode == "height"
-            hat_height = int(face_height * scale_factor)
-            hat_width = int(hat_height * (hat_img.shape[1] / hat_img.shape[0]))
+        # Rotate the hat with canvas to avoid clipping.
+        extra_padding = 50
+        rotated_hat = rotate_with_canvas(resized_hat, final_angle, extra=extra_padding)
 
-        resized_hat = cv2.resize(
-            hat_img, (hat_width, hat_height), interpolation=cv2.INTER_AREA
+        # After rotation, approximate the new anchor by adding the extra padding.
+        anchor_x_rot = brim_scaled[0] + extra_padding
+        anchor_y_rot = brim_scaled[1] + extra_padding
+
+        # Compute the eye center.
+        eye_center = (
+            (left_eye[0] + right_eye[0]) / 2.0,
+            (left_eye[1] + right_eye[1]) / 2.0,
         )
+        eye_distance = np.linalg.norm(right_eye - left_eye)
+        # Compute the eye line angle in radians.
+        a = math.radians(angle)
+        # Compute the upward vector in the head's coordinate frame:
+        # For a non-rotated face, upward is (0, -1). For a rotated face, it's given by:
+        up_vector = (math.sin(a), -math.cos(a))
+        # Set target: move upward from the eye center by k times the eye distance.
+        k = 0.8 * eye_distance  # Tweak this multiplier (try 1.5, 3, or 4 as needed)
+        target_x = eye_center[0] - k * up_vector[0]
+        target_y = eye_center[1] - k * up_vector[1]
 
-        # Rotate the hat
-        padding_value = 50
-        rotated_hat = rotate_with_canvas(resized_hat, final_angle, extra=padding_value)
+        # Compute overlay coordinates so that the rotated hat's anchor aligns with the target.
+        overlay_x = int(target_x - anchor_x_rot)
+        overlay_y = int(target_y - anchor_y_rot)
 
-        # 7) Determine anchor point for the brim
-        # We'll place the brim at y1 (top of face bounding box) minus anchor_offset
-        # so the brim sits slightly above the top. Adjust as needed.
-        brim_y = y1 - anchor_offset
-        # horizontally, we center it on the face
-        face_center_x = int((left_eye[0] + right_eye[0]) / 2.0)
-
-        angle_radians = math.radians(angle)
-        sin_term = math.sin(angle_radians)
-        delta_y = right_eye[1] - left_eye[1]
-
-        # Weighted combination
-        x_offset = int(0.1 * hat_width * sin_term + 0.15 * delta_y)
-
-        # 8) Place the hat so its bottom aligns with brim_y
-        x = face_center_x - (rotated_hat.shape[1] // 2) - 3 * x_offset
-        y = brim_y - rotated_hat.shape[0] + padding_value
-
-        # 9) Overlay
-        result = overlay_image(image, rotated_hat, x, y)
+        result = overlay_image(image, rotated_hat, overlay_x, overlay_y)
         return result
 
-    def apply_glasses(self, image, face_info, glasses_name, default_scale_factor=1.0):
+    def apply_glasses(self, image, face_info, glasses_name):
         """
         Places glasses on the face using metadata for alignment.
         This version supports a new scale mode "head_width" which scales glasses
@@ -390,8 +405,8 @@ class AccessoryPlacer:
         meta = self.glasses_metadata.get(glasses_name, {})
         anchor_x = meta.get("anchor_x", glasses_img.shape[1] // 2)
         anchor_y = meta.get("anchor_y", glasses_img.shape[0] // 2)
-        scale_mode = meta.get("scale_mode", "head_width")  # now default to "head_width"
-        scale_factor = meta.get("scale_factor", default_scale_factor)
+        scale_mode = meta.get("scale_mode")
+        scale_factor = meta.get("scale_factor")
         rotation_offset = meta.get("rotation_offset", 0)
         offset_x = meta.get("offset_x", 0)
         offset_y = meta.get("offset_y", 0)
@@ -583,14 +598,8 @@ def main():
     )
 
     # Path to the input image (from backend)
-    input_image_path = "test_images/four-friends.jpg"
-    results = pipeline.process_image(input_image_path)
-
-    # Optionally display results (close windows by pressing any key)
-    for idx, res in enumerate(results):
-        cv2.imshow(f"Result {idx+1}", res)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    input_image_path = "test_images/nine-people.jpg"
+    pipeline.process_image(input_image_path)
 
 
 if __name__ == "__main__":
