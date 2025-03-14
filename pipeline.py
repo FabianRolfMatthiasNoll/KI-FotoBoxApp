@@ -15,7 +15,7 @@ from retinaface import RetinaFace
 from u2net.u2net import U2NET
 
 # Import the OpenAI client (assumed implemented in openai_client.py)
-from openai_client import OpenAI_Client
+from vision.openai_client import OpenAI_Client
 
 
 #########################
