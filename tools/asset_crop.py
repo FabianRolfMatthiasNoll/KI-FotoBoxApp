@@ -1,5 +1,6 @@
 import os
 import glob
+import sys
 from PIL import Image
 
 
@@ -44,6 +45,6 @@ def process_images(input_folder, output_folder):
 
 if __name__ == "__main__":
     # Replace these paths with your actual folder paths
-    input_folder = "./input_hats"
-    output_folder = "./hats"
+    input_folder = sys.argv[1]
+    output_folder = "./"
     process_images(input_folder, output_folder)

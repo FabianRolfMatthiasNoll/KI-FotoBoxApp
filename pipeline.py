@@ -516,16 +516,14 @@ class ImagePipeline:
         if image is None:
             raise ValueError("Image not found: " + image_path)
 
-        # Get suggestions from OpenAI (expects a tag_prompt.txt file to exist)
-        with open("tag_prompt.txt", "r", encoding="utf-8") as f:
-            prompt = f.read().strip()
-        suggestions = self.openai_client.describe_image_with_retry(image_path, prompt)
-        print("Received suggestions:", suggestions)
-        if not suggestions:
-            print("No valid suggestions received; using default accessories.")
-            suggestions = [{"Background": "none", "Hats": "none", "Glasses": "none"}]
+        structured_response = self.openai_client.describe_image_with_retry(image_path)
+        suggestions = [
+            structured_response.suggestion1,
+            structured_response.suggestion2,
+            structured_response.suggestion3,
+        ]
+        print("Received structured suggestions:", suggestions)
 
-        # Detect faces in the image using RetinaFace
         faces = self.face_detector.detect_faces(image)
         if not faces:
             print("No faces detected.")
@@ -535,11 +533,10 @@ class ImagePipeline:
         for idx, suggestion in enumerate(suggestions):
             edited_image = image.copy()
 
-            # --- Background Replacement ---
-            if suggestion.get("Background", "none") != "none":
+            if suggestion.Background != "none":
                 bg_path = os.path.join(
                     self.accessory_placer.asset_dirs["background"],
-                    suggestion["Background"] + ".jpg",
+                    suggestion.Background + ".jpg",
                 )
                 bg_img = cv2.imread(bg_path)
                 if bg_img is None:
@@ -556,16 +553,14 @@ class ImagePipeline:
                     new_bg = cv2.bitwise_and(bg_img, bg_img, mask=mask_inv)
                     edited_image = cv2.add(fg, new_bg)
 
-            # --- Accessory Placement ---
             accessories = {
-                "hat": suggestion.get("Hats", "none"),
-                "glasses": suggestion.get("Glasses", "none"),
+                "hat": suggestion.Hats,
+                "glasses": suggestion.Glasses,
             }
             for face_info in faces:
                 edited_image = self.accessory_placer.apply_accessories(
                     edited_image, face_info, accessories
                 )
-            # Save and store result
             output_path = f"./output/result_{idx+1}.jpg"
             cv2.imwrite(output_path, edited_image)
             print(f"Saved result to {output_path}")
@@ -597,7 +592,7 @@ def main():
     )
 
     # Path to the input image (from backend)
-    input_image_path = "assets/test_images/nine-people.jpg"
+    input_image_path = "assets/test_images/heart.jpg"
     pipeline.process_image(input_image_path)
 
 

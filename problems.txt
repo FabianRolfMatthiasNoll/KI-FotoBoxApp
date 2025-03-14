@@ -51,3 +51,9 @@ Developed a standalone tool to manually annotate each hat asset by marking the l
 These three points are stored in a JSON metadata file.
 In the pipeline, the left and right border points can be scaled relative to the head’s width, and the midpoint (computed from these or directly the marked lower brim) is used as an anchor to position the hat slightly above eye level.
 The same rotation adjustments applied to glasses are then applied to hats using this metadata.
+
+Problem:
+The current OpenAI integration relies on plain text prompting and regex extraction, making it brittle and prone to errors.
+
+Solution:
+Use OpenAI’s function calling feature to define a JSON schema for the expected output. This ensures deterministic, structured responses without the need for regex parsing. It also allows you to enforce that only predefined tags are used, greatly simplifying downstream processing.

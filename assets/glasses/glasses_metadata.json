@@ -25,5 +25,14 @@
     "rotation_offset": 0,
     "offset_x": 0,
     "offset_y": 0
+  },
+  "glasses_heart": {
+    "anchor_x": 251,
+    "anchor_y": 102,
+    "scale_mode": "head_width",
+    "scale_factor": 1.0,
+    "rotation_offset": 0,
+    "offset_x": 0,
+    "offset_y": 0
   }
 }
