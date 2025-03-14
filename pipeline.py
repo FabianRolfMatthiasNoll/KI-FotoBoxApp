@@ -12,7 +12,7 @@ from torchvision import transforms
 from retinaface import RetinaFace
 
 # Import the pre-trained U²-Net model (assumed available as module u2net)
-from u2net import U2NET
+from u2net.u2net import U2NET
 
 # Import the OpenAI client (assumed implemented in openai_client.py)
 from openai_client import OpenAI_Client
@@ -256,7 +256,7 @@ class BackgroundRemover:
         binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel)
 
         # Save the final mask.
-        cv2.imwrite("mask.png", binary_mask)
+        # cv2.imwrite("mask.png", binary_mask)
         return binary_mask
 
 
@@ -580,12 +580,11 @@ def main():
     load_dotenv()
     API_KEY = os.getenv("OPEN_AI_API_KEY") or ""
 
-    # Define asset directories (adjust paths as needed)
+    # Define asset directories (adjust paths as needed). Key - Path
     asset_dirs = {
-        "background": "backgrounds",
-        "hats": "hats",
-        "glasses": "glasses",
-        # Optionally add more accessory types here (e.g., "beards": "beards")
+        "background": "assets/backgrounds",
+        "hats": "assets/hats",
+        "glasses": "assets/glasses",
     }
     # Ensure output directory exists
     os.makedirs("./output", exist_ok=True)
@@ -598,7 +597,7 @@ def main():
     )
 
     # Path to the input image (from backend)
-    input_image_path = "test_images/nine-people.jpg"
+    input_image_path = "assets/test_images/nine-people.jpg"
     pipeline.process_image(input_image_path)
 
 
