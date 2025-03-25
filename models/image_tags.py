@@ -4,7 +4,13 @@ from pydantic import BaseModel
 
 class ImageTags(BaseModel):
     Background: Literal["beach", "sunset", "space", "none"]
-    Hats: Literal["party_hat", "crown", "cowboy_hat", "none"]
+    Hats: Literal[
+        "party_hat",
+        "crown",
+        "cowboy_hat",
+        "astronaut",
+        "none",
+    ]
     Glasses: Literal[
         "glasses_clown_nose",
         "glasses_googley_eyes",

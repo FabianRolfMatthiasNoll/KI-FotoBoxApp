@@ -60,7 +60,7 @@ def pick_hat_anchors(input_dir, metadata_file):
             disp_img = img.copy()
             # Draw circles and labels for each clicked point.
             for i, pt in enumerate(points):
-                cv2.circle(disp_img, pt, 5, (0, 255, 0, 255), -1)
+                cv2.circle(disp_img, pt, 50, (0, 255, 0, 255), -1)
                 cv2.putText(
                     disp_img,
                     f"{i+1}",
