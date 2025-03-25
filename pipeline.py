@@ -54,50 +54,6 @@ def overlay_image(background: np.ndarray, overlay, x, y):
     return background
 
 
-'''
-def composite_background(original, alpha, new_bg):
-    """
-    Composites the original image over new_bg using 'alpha' as a soft mask in [0,1].
-    alpha=1 => original pixel, alpha=0 => background pixel.
-    Both 'original' and 'new_bg' should be BGR images of the same size.
-    """
-    # Ensure shapes match
-    h, w = original.shape[:2]
-    new_bg = cv2.resize(new_bg, (w, h))
-
-    # Expand alpha to 3 channels so we can multiply
-    alpha_3ch = np.dstack([alpha, alpha, alpha])
-
-    # Convert images to float for blending
-    foreground_float = original.astype(np.float32)
-    background_float = new_bg.astype(np.float32)
-    alpha_float = alpha_3ch.astype(np.float32)
-
-    # Soft blend: out = alpha*foreground + (1-alpha)*background
-    composite = alpha_float * foreground_float + (1 - alpha_float) * background_float
-    composite = composite.astype(np.uint8)
-    return composite
-'''
-
-'''
-def rotate_image(image, angle):
-    """
-    Rotates an image by a given angle (in degrees) around its center.
-    """
-    h, w = image.shape[:2]
-    center = (w // 2, h // 2)
-    rotation_matrix = cv2.getRotationMatrix2D(center, angle, scale=1.0)
-    rotated = cv2.warpAffine(
-        image,
-        rotation_matrix,
-        (w, h),
-        flags=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_CONSTANT,
-    )
-    return rotated
-'''
-
-
 def rotate_with_canvas(image: np.ndarray, angle: float, extra=50):
     """
     Rotates an RGBA image by a given angle around its center, ensuring no corners
@@ -252,7 +208,7 @@ class BackgroundRemover:
         mask = (mask * 255).astype(np.uint8)
 
         # Apply a threshold to obtain a binary mask.
-        _, binary_mask = cv2.threshold(mask, 10, 255, cv2.THRESH_BINARY)
+        _, binary_mask = cv2.threshold(mask, 30, 255, cv2.THRESH_BINARY)
 
         # Optionally, use morphological operations to clean up the mask.
         kernel = np.ones((5, 5), np.uint8)
@@ -450,6 +406,26 @@ class AccessoryPlacer:
         result = overlay_image(image, padded_rotated, x, y)
         return result
 
+    def apply_effect(self, image: np.ndarray, effect_name: str):
+        """
+        Overlays an effect on the image. The effect asset is expected to be a PNG with transparency.
+        It is resized to match the input image dimensions and then overlaid from the top-left corner.
+        """
+        effect_path = os.path.join(self.asset_dirs["effects"], effect_name + ".png")
+        effect_img = cv2.imread(effect_path, cv2.IMREAD_UNCHANGED)
+        if effect_img is None:
+            print(f"Effect image not found: {effect_path}")
+            return image
+
+        # Resize the effect to match the full image size.
+        effect_resized = cv2.resize(
+            effect_img, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_AREA
+        )
+
+        # Overlay the effect onto the image. (Position (0,0) is used here.)
+        result = overlay_image(image, effect_resized, 0, 0)
+        return result
+
     def apply_accessories(self, image, face_info, accessories):
         """
         Applies the specified accessories to the image for one detected face.
@@ -534,11 +510,19 @@ class ImagePipeline:
             accessories = {
                 "hat": suggestion.Hats,
                 "glasses": suggestion.Glasses,
+                "effect": suggestion.Effects,
             }
+
             for face_info in faces:
                 edited_image = self.accessory_placer.apply_accessories(
                     edited_image, face_info, accessories
                 )
+
+            if accessories.get("effect", "none") != "none":
+                edited_image = self.accessory_placer.apply_effect(
+                    edited_image, accessories["effect"]
+                )
+
             output_path = f"./output/result_{idx+1}.jpg"
             cv2.imwrite(output_path, edited_image)
             print(f"Saved result to {output_path}")
@@ -571,7 +555,7 @@ def main():
     )
 
     # Path to the input image (from backend)
-    input_image_path = "assets/test_images/ass.png"
+    input_image_path = "assets/test_images/lovers.jpg"
     pipeline.process_image(input_image_path)
 
 
