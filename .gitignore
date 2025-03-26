@@ -178,5 +178,6 @@ models/u2net.pth
 
 output/*
 prompt.txt
+checkpoints/*
 
 # End of https://www.toptal.com/developers/gitignore/api/pythonu2net/u2net.pth

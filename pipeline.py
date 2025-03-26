@@ -4,6 +4,9 @@ import os
 import cv2
 import numpy as np
 import torch
+import torch.nn as nn
+from PIL import Image
+import torch.nn.functional as F
 from dotenv import load_dotenv
 from torchvision import transforms
 
@@ -11,8 +14,8 @@ from torchvision import transforms
 # This example uses the 'retinaface' package (pip install retinaface)
 from retinaface import RetinaFace
 
-# Import the pre-trained U²-Net model (assumed available as module u2net)
-from u2net.u2net import U2NET
+
+from MODNet.src.models.modnet import MODNet
 
 # Import the OpenAI client (assumed implemented in openai_client.py)
 from vision.openai_client import OpenAI_Client
@@ -164,58 +167,78 @@ class FaceDetector:
 #########################
 class BackgroundRemover:
     """
-    Uses U²‑Net (pre-trained) to perform robust background segmentation.
-    The segmentation mask is used for alpha blending with a new background.
+    Verwendet MODNet (vortrainiert) zur Hintergrundsegmentierung.
+    Das Modell gibt ein Alpha-Matte zurück, das für den Alpha-Blending verwendet wird.
     """
 
-    def __init__(self, model_path="u2net/u2net.pth", device=None):
+    def __init__(self, model_path="modnet/modnet.ckpt", device=None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = U2NET(3, 1)
-        state_dict = torch.load(model_path, map_location=torch.device(self.device))
-        self.model.load_state_dict(state_dict)
-        self.model.to(self.device)
-        self.model.eval()
-        self.transform = transforms.Compose(
-            [
-                transforms.ToPILImage(),
-                transforms.Resize((320, 320)),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-                ),
-            ]
-        )
+        self.model = MODNet(backbone_pretrained=False)
 
-    def normPRED(self, d):
-        """
-        Normalizes the prediction map to [0,1].
-        """
-        ma = torch.max(d)
-        mi = torch.min(d)
-        dn = (d - mi) / (ma - mi)
-        return dn
+        self.model = nn.DataParallel(self.model)
+
+        if torch.cuda.is_available():
+            self.model = self.model.cuda()
+            weights = torch.load(model_path)
+        else:
+            weights = torch.load(model_path, map_location=torch.device("cpu"))
+        self.model.load_state_dict(weights)
+        self.model.eval()
 
     def remove_background(self, image):
         original_size = (image.shape[1], image.shape[0])
-        input_tensor = self.transform(image).unsqueeze(0).to(self.device)
+        ref_size = 512
+
+        # Konvertiere BGR (cv2) zu RGB und dann in ein PIL-Image
+        im_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+
+        # Definiere den Transformations-Workflow wie im Original-Repo
+        im_transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]
+        )
+
+        # Wandle das Bild in einen Tensor um und füge eine Batch-Dimension hinzu
+        im_tensor = im_transform(im_pil).unsqueeze(0)  # type: ignore # Form: (1, 3, H, W)
+        _, _, im_h, im_w = im_tensor.shape
+
+        # Berechne neue Bilddimensionen basierend auf dem Referenzwert
+        if max(im_h, im_w) < ref_size or min(im_h, im_w) > ref_size:
+            if im_w >= im_h:
+                im_rh = ref_size
+                im_rw = int(im_w / im_h * ref_size)
+            else:
+                im_rw = ref_size
+                im_rh = int(im_h / im_w * ref_size)
+        else:
+            im_rh = im_h
+            im_rw = im_w
+
+        # Passe Höhe und Breite so an, dass sie durch 32 teilbar sind
+        im_rw = im_rw - im_rw % 32
+        im_rh = im_rh - im_rh % 32
+
+        # Resample das Bild auf die neuen Dimensionen
+        im_tensor = F.interpolate(im_tensor, size=(im_rh, im_rw), mode="area")
+
         with torch.no_grad():
-            d1, *rest = self.model(input_tensor)
-            pred = d1[:, 0, :, :]
-            pred = self.normPRED(pred)
-            pred_np = pred.squeeze().cpu().numpy()
+            input_tensor = im_tensor.to(self.device)
+            # Inferenz – beachte das zusätzliche Flag (hier True) für den Inferenzmodus
+            _, _, matte = self.model(input_tensor, True)
+            # Skaliere die Matte zurück auf die Originalgröße
+            matte = F.interpolate(
+                matte, size=(original_size[1], original_size[0]), mode="area"
+            )
+            matte = matte[0][0].data.cpu().numpy()
 
-        mask = cv2.resize(pred_np, original_size, interpolation=cv2.INTER_LINEAR)
-        mask = (mask * 255).astype(np.uint8)
-
-        # Apply a threshold to obtain a binary mask.
+        # Wandle das Ergebnis in eine Maske um
+        mask = (matte * 255).astype(np.uint8)
         _, binary_mask = cv2.threshold(mask, 30, 255, cv2.THRESH_BINARY)
-
-        # Optionally, use morphological operations to clean up the mask.
         kernel = np.ones((5, 5), np.uint8)
         binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel)
-
-        # Save the final mask.
-        cv2.imwrite("mask.png", binary_mask)
+        cv2.imwrite("output/mask.png", binary_mask)
         return binary_mask
 
 
@@ -448,11 +471,13 @@ class ImagePipeline:
     and optional style suggestions (via OpenAI) into a single processing flow.
     """
 
-    def __init__(self, asset_dirs, u2net_model_path, openai_api_key, device=None):
+    def __init__(
+        self, asset_dirs, segmentation_model_path, openai_api_key, device=None
+    ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.face_detector = FaceDetector(device=self.device)
         self.bg_remover = BackgroundRemover(
-            model_path=u2net_model_path, device=self.device
+            model_path=segmentation_model_path, device=self.device
         )
         self.accessory_placer = AccessoryPlacer(asset_dirs)
         self.openai_client = OpenAI_Client(openai_api_key, "gpt-4o")
@@ -550,7 +575,7 @@ def main():
     # Initialize the pipeline (ensure paths to models and assets are correct)
     pipeline = ImagePipeline(
         asset_dirs=asset_dirs,
-        u2net_model_path="u2net/u2net.pth",
+        segmentation_model_path="checkpoints/modnet_photographic_portrait_matting.ckpt",
         openai_api_key=API_KEY,
     )
 
