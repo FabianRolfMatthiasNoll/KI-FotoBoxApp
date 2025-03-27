@@ -124,6 +124,51 @@ def load_glasses_metadata(glasses_dir):
             return {}
 
 
+def draw_faces(image, faces, draw_asset_points=False):
+    """
+    Draws bounding boxes and facial landmarks on a copy of the image.
+    Optionally draws the asset anchor points used for accessory placement.
+    """
+    output = image.copy()
+    for face in faces:
+        bbox = face["bbox"]  # [x1, y1, x2, y2]
+        landmarks = face["landmarks"]
+
+        # Bounding box (green)
+        cv2.rectangle(output, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 0), 2)
+
+        # Landmarks (red)
+        for point in landmarks.values():
+            cv2.circle(output, (int(point[0]), int(point[1])), 3, (0, 0, 255), -1)
+
+        if draw_asset_points:
+            # === Compute hat anchor debug points ===
+            left_eye = np.array(landmarks["left_eye"], dtype=float)
+            right_eye = np.array(landmarks["right_eye"], dtype=float)
+
+            # Eye center
+            eye_center = (left_eye + right_eye) / 2.0
+            cv2.circle(
+                output, tuple(eye_center.astype(int)), 4, (255, 255, 0), -1
+            )  # yellow
+
+            # Up vector from eye line
+            angle = math.atan2(right_eye[1] - left_eye[1], right_eye[0] - left_eye[0])
+            up_vector = (math.sin(angle), -math.cos(angle))
+            eye_distance = np.linalg.norm(right_eye - left_eye)
+
+            k = 0.8 * eye_distance
+            target = eye_center - k * np.array(up_vector)
+            cv2.circle(
+                output, tuple(target.astype(int)), 5, (255, 0, 255), -1
+            )  # purple
+
+            # Label them if needed (optional)
+            # cv2.putText(output, "target", tuple(target.astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
+
+    return output
+
+
 #########################
 # Module: FaceDetector
 #########################
@@ -495,6 +540,9 @@ class ImagePipeline:
         if image is None:
             raise ValueError("Image not found: " + image_path)
 
+        # To draw the calculated placement points of the assets on the debug image
+        DRAW_ASSET_DEBUG_POINTS = True
+
         structured_response = self.openai_client.describe_image_with_retry(image_path)
         suggestions = [
             structured_response.suggestion1,
@@ -507,6 +555,11 @@ class ImagePipeline:
         if not faces:
             print("No faces detected.")
             return [image]
+        
+        # Save face-only diagnostic image
+        face_debug_image = draw_faces(image, faces, draw_asset_points=DRAW_ASSET_DEBUG_POINTS)
+        cv2.imwrite("./output/faces_debug.jpg", face_debug_image)
+        print("Saved face landmark debug image to ./output/faces_debug.jpg")
 
         results = []
         for idx, suggestion in enumerate(suggestions):
