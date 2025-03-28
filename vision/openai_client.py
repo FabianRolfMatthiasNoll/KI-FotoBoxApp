@@ -1,8 +1,6 @@
 from openai import OpenAI
 import base64
-import json
 from models.image_tags import ImageTags, ImageTagsResponse
-from dotenv import load_dotenv
 
 prompt = (
     "Analyze the uploaded image and generate structured tags for a rule-based editing system. "
@@ -11,7 +9,9 @@ prompt = (
     "[Hats]: party_hat, crown, cowboy_hat, none\n"
     "[Glasses]: glasses_clown_nose, glasses_googley_eyes, glasses_nose_mustache, glasses_heart, none\n"
     "[Effects]: confetti, sparkles, spotlight, heart, none\n"
+    "[Masks]: astronaut_helmet, none\n"
     "If the image shows heart gestures, for example, use 'heart' for Effects and 'glasses_heart' for Glasses."
+    "Try to make funny combinations. Things like a space background and astronaut masks could be comined an triggered by waving the arms as an example."
 )
 
 
@@ -34,8 +34,10 @@ class OpenAI_Client:
                     "content": (
                         "You are an assistant that analyzes images for a fun photobox application. "
                         "Generate strictly structured JSON tags for a rule-based editing system. "
-                        "Return exactly three separate suggestions as a JSON object with keys suggestion1, suggestion2, and suggestion3. "
-                        "Each suggestion must contain the keys Background, Hats, Glasses, and Effects, using only the allowed options."
+                        "Return exactly three separate suggestions "
+                        "Each suggestion must contain the keys Background, Hats, Glasses, and Effects, Masks using only the allowed options."
+                        "Your are not allowed to make a suggestion that is completely none."
+                        "If you choose a Mask you cant choose Hats or Glasses for that suggestion and vice versa"
                     ),
                 },
                 {
@@ -51,7 +53,7 @@ class OpenAI_Client:
                     ],
                 },
             ],
-            temperature=0.5,
+            temperature=0.8,
             response_format=ImageTagsResponse,
         )
         parsed = response.choices[0].message.parsed
@@ -59,13 +61,25 @@ class OpenAI_Client:
             # Fallback with three default suggestions.
             fallback = ImageTagsResponse(
                 suggestion1=ImageTags(
-                    Background="none", Hats="none", Glasses="none", Effects="none"
+                    Background="none",
+                    Hats="none",
+                    Glasses="none",
+                    Effects="none",
+                    Masks="none",
                 ),
                 suggestion2=ImageTags(
-                    Background="none", Hats="none", Glasses="none", Effects="none"
+                    Background="none",
+                    Hats="none",
+                    Glasses="none",
+                    Effects="none",
+                    Masks="none",
                 ),
                 suggestion3=ImageTags(
-                    Background="none", Hats="none", Glasses="none", Effects="none"
+                    Background="none",
+                    Hats="none",
+                    Glasses="none",
+                    Effects="none",
+                    Masks="none",
                 ),
             )
             return fallback

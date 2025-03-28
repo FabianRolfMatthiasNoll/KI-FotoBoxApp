@@ -1,0 +1,21 @@
+{
+  "astronaut_helmet": {
+    "left_border": [
+      741,
+      1157
+    ],
+    "right_border": [
+      1612,
+      1148
+    ],
+    "brim": [
+      1186,
+      1018
+    ],
+    "scale_mode": "width",
+    "scale_factor": 1.0,
+    "rotation_offset": 0,
+    "offset_x": 0,
+    "offset_y": 0
+  }
+}

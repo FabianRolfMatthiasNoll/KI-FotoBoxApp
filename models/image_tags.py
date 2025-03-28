@@ -19,6 +19,7 @@ class ImageTags(BaseModel):
         "none",
     ]
     Effects: Literal["confetti", "sparkles", "spotlight", "hearts", "none"]
+    Masks: Literal["astronaut_helmet", "none"]
 
 
 class ImageTagsResponse(BaseModel):

@@ -124,6 +124,20 @@ def load_glasses_metadata(glasses_dir):
             return {}
 
 
+def load_masks_metadata(masks_dir):
+    metadata_path = os.path.join(masks_dir, "masks_metadata.json")
+    if not os.path.isfile(metadata_path):
+        print(f"No Mask metadata found at: {metadata_path}. Using defaults.")
+        return {}
+    with open(metadata_path, "r") as f:
+        try:
+            data = json.load(f)
+            return data
+        except json.JSONDecodeError as e:
+            print(f"Error parsing masks_metadata.json: {e}")
+            return {}
+
+
 def draw_faces(image, faces, draw_asset_points=False):
     """
     Draws bounding boxes and facial landmarks on a copy of the image.
@@ -306,6 +320,7 @@ class AccessoryPlacer:
         self.asset_dirs = asset_dirs
         self.hat_metadata = load_hat_metadata(asset_dirs["hats"])
         self.glasses_metadata = load_glasses_metadata(asset_dirs["glasses"])
+        self.masks_metadata = load_masks_metadata(asset_dirs["masks"])
 
     def apply_hat(self, image, face_info, hat_name):
         """
@@ -406,8 +421,6 @@ class AccessoryPlacer:
     def apply_glasses(self, image, face_info, glasses_name):
         """
         Places glasses on the face using metadata for alignment.
-        This version supports a new scale mode "head_width" which scales glasses
-        nearly as wide as the face.
         """
         # Load the glasses asset
         glasses_path = os.path.join(self.asset_dirs["glasses"], glasses_name + ".png")
@@ -473,6 +486,82 @@ class AccessoryPlacer:
         result = overlay_image(image, padded_rotated, x, y)
         return result
 
+    def apply_masks(self, image, face_info, mask_name):
+        """
+        Places Masks on the face using metadata for alignment.
+        Masks are a combination of glasses and hats. The metadata will be handled like a hat to get the
+        correct scaling. And the anchor point needs to be handled as glasses to get a good placement.
+        """
+        # Load the glasses asset
+        masks_path = os.path.join(self.asset_dirs["masks"], mask_name + ".png")
+        mask_img = cv2.imread(masks_path, cv2.IMREAD_UNCHANGED)
+        if mask_img is None:
+            print(f"Mask image not found: {masks_path}")
+            return image
+
+        # Retrieve metadata
+        meta = self.masks_metadata.get(mask_name, {})
+        anchor = meta.get("brim")
+        left_border = meta.get("left_border")
+        right_border = meta.get("right_border")
+
+        anchor_x = anchor[0]
+        anchor_y = anchor[1]
+
+        # Retrieve landmarks; we also need face bbox to estimate head width.
+        face_info_bbox = face_info.get("bbox", None)
+        landmarks = face_info["landmarks"]
+        left_eye = landmarks["left_eye"]
+        right_eye = landmarks["right_eye"]
+
+        eye_center_x = (left_eye[0] + right_eye[0]) / 2.0
+        eye_center_y = (left_eye[1] + right_eye[1]) / 2.0
+
+        # Determine base scale
+        if face_info_bbox:
+            x1, _, x2, _ = face_info_bbox
+            face_width = x2 - x1
+        else:
+            # Fallback: estimate head width as 2.5 * eye distance
+            eye_distance = np.linalg.norm(np.array(left_eye) - np.array(right_eye))
+            face_width = 2.5 * eye_distance
+
+        mask_inner_width = np.linalg.norm(
+            np.array(left_border) - np.array(right_border)
+        )
+        scale = face_width / mask_inner_width
+
+        # Resize Masks based on computed scale
+        new_width = int(mask_img.shape[1] * scale)
+        new_height = int(mask_img.shape[0] * scale)
+        resized_glasses = cv2.resize(
+            mask_img, (new_width, new_height), interpolation=cv2.INTER_AREA
+        )
+
+        # Compute rotation from the eye line
+        angle = math.degrees(
+            math.atan2(right_eye[1] - left_eye[1], right_eye[0] - left_eye[0])
+        )
+        # Adjust angle by rotation_offset; add 180 if needed for proper orientation
+        final_angle = -angle + 180
+
+        # Use rotate_with_canvas to avoid cutoffs
+        padded_rotated = rotate_with_canvas(resized_glasses, final_angle, extra=50)
+
+        # Compute the anchor in the rotated image.
+        # The anchor in the original resized image is (anchor_x * scale, anchor_y * scale).
+        # After padding, add the extra padding value (50).
+        anchor_x_scaled = anchor_x * scale + 50
+        anchor_y_scaled = anchor_y * scale + 50
+
+        # Place the glasses so that the anchor lands at the eye center,
+        # with additional offsets if defined.
+        x = int(eye_center_x - anchor_x_scaled)
+        y = int(eye_center_y - anchor_y_scaled)
+
+        result = overlay_image(image, padded_rotated, x, y)
+        return result
+
     def apply_effect(self, image: np.ndarray, effect_name: str):
         """
         Overlays an effect on the image. The effect asset is expected to be a PNG with transparency.
@@ -503,6 +592,8 @@ class AccessoryPlacer:
             image = self.apply_hat(image, face_info, accessories["hat"])
         if accessories.get("glasses", "none") != "none":
             image = self.apply_glasses(image, face_info, accessories["glasses"])
+        if accessories.get("masks", "none") != "none":
+            image = self.apply_masks(image, face_info, accessories["masks"])
         return image
 
 
@@ -590,6 +681,7 @@ class ImagePipeline:
                 "hat": suggestion.Hats,
                 "glasses": suggestion.Glasses,
                 "effect": suggestion.Effects,
+                "masks": suggestion.Masks,
             }
 
             for face_info in faces:
@@ -622,6 +714,7 @@ def main():
         "hats": "assets/hats",
         "glasses": "assets/glasses",
         "effects": "assets/effects",
+        "masks": "assets/masks",
     }
     # Ensure output directory exists
     os.makedirs("./output", exist_ok=True)
@@ -634,7 +727,7 @@ def main():
     )
 
     # Path to the input image (from backend)
-    input_image_path = "assets/test_images/ass.png"
+    input_image_path = "assets/test_images/four-friends.jpg"
     pipeline.process_image(input_image_path)
 
 
