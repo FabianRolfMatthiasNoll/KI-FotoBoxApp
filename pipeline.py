@@ -1,3 +1,4 @@
+import glob
 import json
 import math
 import os
@@ -183,6 +184,63 @@ def draw_faces(image, faces, draw_asset_points=False):
     return output
 
 
+def load_metadata_assets(asset_dirs, category):
+    """
+    For categories with metadata (hats, glasses, masks).
+    Loads keys from the corresponding metadata JSON.
+    """
+    metadata_path = os.path.join(asset_dirs[category], f"{category}_metadata.json")
+    assets = []
+    if os.path.isfile(metadata_path):
+        try:
+            with open(metadata_path, "r") as f:
+                metadata = json.load(f)
+                assets = list(metadata.keys())
+        except json.JSONDecodeError:
+            print(f"Error decoding {metadata_path}.")
+    return assets
+
+
+def load_file_assets(asset_dirs, category):
+    """
+    For categories without metadata (backgrounds, effects).
+    Scans the directory for image files (e.g. PNG or JPG), strips file extensions,
+    and returns a sorted list of unique names.
+    """
+    directory = asset_dirs[category]
+    files = glob.glob(os.path.join(directory, "*"))
+    assets = set()
+    for file in files:
+        base = os.path.basename(file)
+        name, ext = os.path.splitext(base)
+        if ext.lower() in [".png", ".jpg", ".jpeg"]:
+            assets.add(name)
+    return sorted(list(assets))
+
+
+def load_all_assets(asset_dirs):
+    """
+    Loads asset options for all categories.
+    For backgrounds and effects, load from file listing.
+    For hats, glasses, and masks, load from metadata.
+    Always add "none" if it's not present.
+    """
+    all_assets = {}
+    # Categories to load from files:
+    for category in ["backgrounds", "effects"]:
+        assets = load_file_assets(asset_dirs, category)
+        if "none" not in assets:
+            assets.append("none")
+        all_assets[category] = assets
+    # Categories to load from metadata:
+    for category in ["hats", "glasses", "masks"]:
+        assets = load_metadata_assets(asset_dirs, category)
+        if "none" not in assets:
+            assets.append("none")
+        all_assets[category] = assets
+    return all_assets
+
+
 #########################
 # Module: FaceDetector
 #########################
@@ -291,6 +349,9 @@ class BackgroundRemover:
                 matte, size=(original_size[1], original_size[0]), mode="area"
             )
             matte = matte[0][0].data.cpu().numpy()
+
+        matte_uint8 = (matte * 255).astype(np.uint8)
+        cv2.imwrite("output/matte_before_threshold.png", matte_uint8)
 
         # Wandle das Ergebnis in eine Maske um
         mask = (matte * 255).astype(np.uint8)
@@ -617,6 +678,31 @@ class ImagePipeline:
         self.accessory_placer = AccessoryPlacer(asset_dirs)
         self.openai_client = OpenAI_Client(openai_api_key, "gpt-4o")
 
+        self.asset_options = load_all_assets(asset_dirs)
+
+    def generate_asset_prompt(self):
+        """
+        Generates a text block with dynamic options for each category.
+        The prompt preserves the original instructions and examples.
+        """
+        backgrounds = ", ".join(self.asset_options.get("backgrounds", []))
+        hats = ", ".join(self.asset_options.get("hats", []))
+        glasses = ", ".join(self.asset_options.get("glasses", []))
+        effects = ", ".join(self.asset_options.get("effects", []))
+        masks = ", ".join(self.asset_options.get("masks", []))
+        prompt = (
+            "Analyze the uploaded image and generate structured tags for a rule-based editing system. "
+            "Return exactly three separate suggestions. Use only the following options:\n"
+            f"[Background]: {backgrounds}\n"
+            f"[Hats]: {hats}\n"
+            f"[Glasses]: {glasses}\n"
+            f"[Effects]: {effects}\n"
+            f"[Masks]: {masks}\n"
+            "If the image shows heart gestures, for example, use 'heart' for Effects and 'glasses_heart' for Glasses. "
+            "Try to make funny combinations. Things like a space background and astronaut masks could be combined and triggered by waving the arms as an example."
+        )
+        return prompt
+
     def process_image(self, image_path):
         """
         Processes the image:
@@ -633,7 +719,11 @@ class ImagePipeline:
         # To draw the calculated placement points of the assets on the debug image
         DRAW_ASSET_DEBUG_POINTS = True
 
-        structured_response = self.openai_client.describe_image_with_retry(image_path)
+        asset_prompt = self.generate_asset_prompt()
+        print(asset_prompt)
+        structured_response = self.openai_client.describe_image_with_retry(
+            image_path, prompt=asset_prompt
+        )
         suggestions = [
             structured_response.suggestion1,
             structured_response.suggestion2,
@@ -659,7 +749,7 @@ class ImagePipeline:
 
             if suggestion.Background != "none":
                 bg_path = os.path.join(
-                    self.accessory_placer.asset_dirs["background"],
+                    self.accessory_placer.asset_dirs["backgrounds"],
                     suggestion.Background + ".jpg",
                 )
                 bg_img = cv2.imread(bg_path)
@@ -710,7 +800,7 @@ def main():
 
     # Define asset directories (adjust paths as needed). Key - Path
     asset_dirs = {
-        "background": "assets/backgrounds",
+        "backgrounds": "assets/backgrounds",
         "hats": "assets/hats",
         "glasses": "assets/glasses",
         "effects": "assets/effects",
@@ -727,7 +817,7 @@ def main():
     )
 
     # Path to the input image (from backend)
-    input_image_path = "assets/test_images/four-friends.jpg"
+    input_image_path = "assets/test_images/lovers.jpg"
     pipeline.process_image(input_image_path)
 
 
