@@ -5,3 +5,7 @@ retina-face
 tensorflow
 tf-keras
 openai
+fastapi
+uvicorn
+requests
+python-multipart
