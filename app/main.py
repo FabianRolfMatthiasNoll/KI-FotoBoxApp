@@ -1,9 +1,8 @@
-# app/main.py
-
 import os
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -17,15 +16,12 @@ ASSET_DIRS = {
     "effects": "assets/effects",
     "masks": "assets/masks",
 }
-
-app = FastAPI()
-
 # We'll store our ImagePipeline instance here.
 app_pipeline = None
 
 
-@app.on_event("startup")
-def load_models_and_pipeline():
+@asynccontextmanager
+async def load_models_and_pipeline(app: FastAPI):
     device = "cuda" if os.environ.get("CUDA_VISIBLE_DEVICES") else "cpu"
     from pipeline.face_detection import FaceDetector
     from pipeline.background_removal import BackgroundRemover
@@ -48,6 +44,10 @@ def load_models_and_pipeline():
     global app_pipeline
     app_pipeline = ImagePipeline(asset_dirs=ASSET_DIRS, device=device)
     print("Models and pipeline loaded successfully.")
+    yield
+
+
+app = FastAPI(lifespan=load_models_and_pipeline)
 
 
 @app.post("/process_image")
@@ -67,13 +67,15 @@ async def process_image_endpoint(
         input_image = read_imagefile(file_bytes)
     except Exception as e:
         raise HTTPException(
-            status_code=400, detail="Error reading the uploaded image. {e}"
+            status_code=400, detail=("Error reading the uploaded image. " + str(e))
         )
 
     try:
         # Use the ImagePipeline instance that was created at startup.
-        if app_pipeline != None:
-            results = app_pipeline.process_image(input_image)
+        if app_pipeline is not None:
+            results = app_pipeline.process_image(
+                input_image, background_override, effect_override
+            )
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Pipeline processing error: {str(e)}"

@@ -1,9 +1,11 @@
 import os
+import time
 import cv2
 import json
-from pipeline.image_utils import (
-    draw_faces,
-)
+import math
+import numpy as np
+from concurrent.futures import ThreadPoolExecutor
+from pipeline.image_utils import draw_faces
 from pipeline import (
     global_vars,
 )  # Contains: face_detector, bg_remover, accessory_placer, openai_client
@@ -17,7 +19,6 @@ def load_all_assets(asset_dirs):
     Always adds "none" if not present.
     """
     all_assets = {}
-    # For file-based assets (backgrounds, effects):
     for category in ["backgrounds", "effects"]:
         directory = asset_dirs.get(category, "")
         if not os.path.isdir(directory):
@@ -31,7 +32,6 @@ def load_all_assets(asset_dirs):
             if "none" not in files:
                 files.append("none")
             all_assets[category] = sorted(files)
-    # For metadata-based assets (hats, glasses, masks):
     for category in ["hats", "glasses", "masks"]:
         meta_file = os.path.join(
             asset_dirs.get(category, ""), f"{category}_metadata.json"
@@ -59,7 +59,6 @@ class ImagePipeline:
     """
 
     def __init__(self, asset_dirs, device=None):
-        # Although models were loaded globally in app/startup, we still need our asset settings.
         self.device = device or (
             "cuda" if os.environ.get("CUDA_VISIBLE_DEVICES") else "cpu"
         )
@@ -94,57 +93,87 @@ class ImagePipeline:
         )
         return prompt
 
-    def process_image(self, image):
+    def process_image(self, image, background_override, effect_override):
         """
         Processes the input image (a numpy array):
-          - Detects faces.
-          - Generates a prompt using asset options.
-          - Obtains accessory suggestions from OpenAI.
-          - Optionally replaces the background.
-          - Overlays accessories on each detected face.
+        - Generates an asset prompt.
+        - In parallel, obtains accessory suggestions from OpenAI and performs face detection.
+        - Optionally replaces the background.
+        - Overlays accessories on each detected face.
         Returns a list of resulting images (one per suggestion).
         """
         if image is None:
             raise ValueError("Input image is None.")
 
-        # Generate the asset prompt based on available assets.
-        asset_prompt = self.generate_asset_prompt()
-        print("Generated asset prompt...")
-        # print(asset_prompt)
+        overall_start = time.time()
+        print("Starting image processing pipeline...")
 
-        # Save the image temporarily to supply a file path for the OpenAI client.
+        # Step 1: Generate the asset prompt.
+        t0 = time.time()
+        asset_prompt = self.generate_asset_prompt()
+        print("Asset prompt generated in {:.3f} seconds.".format(time.time() - t0))
+        # Uncomment to print full prompt: print(asset_prompt)
+
+        # Step 2: Save input image temporarily for the OpenAI client.
+        t1 = time.time()
         temp_path = "./temp_input.jpg"
         cv2.imwrite(temp_path, image)
+        print(
+            "Input image saved to temporary file in {:.3f} seconds.".format(
+                time.time() - t1
+            )
+        )
 
-        # Get structured suggestions from the OpenAI client.
-        structured_response = self.openai_client.describe_image_with_retry(
-            temp_path, prompt=asset_prompt
+        # Step 3: Run the OpenAI suggestion and face detection in parallel.
+        t2 = time.time()
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_suggestions = executor.submit(
+                self.openai_client.describe_image_with_retry,
+                temp_path,
+                prompt=asset_prompt,
+            )
+            future_faces = executor.submit(self.face_detector.detect_faces, image)
+            structured_response = future_suggestions.result()
+            faces = future_faces.result()
+        print(
+            "Received structured suggestions and performed face detection in {:.3f} seconds.".format(
+                time.time() - t2
+            )
         )
         suggestions = [
             structured_response.suggestion1,
             structured_response.suggestion2,
             structured_response.suggestion3,
         ]
-        print("Received structured suggestions...")
-        # print(suggestions)
+        # Apply override values if provided.
+        if background_override is not None and background_override.strip() != "":
+            for suggestion in suggestions:
+                suggestion.Background = background_override
+            print(f"Overriding background with: {background_override}")
+        if effect_override is not None and effect_override.strip() != "":
+            for suggestion in suggestions:
+                suggestion.Effects = effect_override
+            print(f"Overriding effect with: {effect_override}")
 
-        # Perform face detection.
-        faces = self.face_detector.detect_faces(image)
         if not faces:
             print("No faces detected.")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
             return [image]
 
-        # Optionally save a debug image with face bounding boxes and landmarks.
-        face_debug_image = draw_faces(image, faces)
-        cv2.imwrite("./output/faces_debug.jpg", face_debug_image)
-        print("Saved face landmark debug image to ./output/faces_debug.jpg")
+        print("Face detection reported {} faces.".format(len(faces)))
 
         results = []
+        # For each suggestion, create a processed image.
         for idx, suggestion in enumerate(suggestions):
+            t_iter = time.time()
             edited_image = image.copy()
 
-            # If a background is suggested (not "none"), perform background replacement.
+            # Step 4: Background Replacement.
             if suggestion.Background.lower() != "none":
+                t_bg = time.time()
                 bg_path = os.path.join(
                     self.accessory_placer.asset_dirs["backgrounds"],
                     suggestion.Background + ".jpg",
@@ -158,13 +187,24 @@ class ImagePipeline:
                     bg_img = cv2.resize(
                         bg_img, (edited_image.shape[1], edited_image.shape[0])
                     )
+                    t_mask = time.time()
                     mask = self.bg_remover.remove_background(edited_image)
+                    print(
+                        "Background removal took {:.3f} seconds.".format(
+                            time.time() - t_mask
+                        )
+                    )
                     mask_inv = cv2.bitwise_not(mask)
                     fg = cv2.bitwise_and(edited_image, edited_image, mask=mask)
                     new_bg = cv2.bitwise_and(bg_img, bg_img, mask=mask_inv)
                     edited_image = cv2.add(fg, new_bg)
+                    print(
+                        "Background replacement completed in {:.3f} seconds.".format(
+                            time.time() - t_bg
+                        )
+                    )
 
-            # Assemble the accessory specification.
+            # Step 5: Assemble accessory specification.
             accessories = {
                 "hat": suggestion.Hats,
                 "glasses": suggestion.Glasses,
@@ -172,25 +212,47 @@ class ImagePipeline:
                 "masks": suggestion.Masks,
             }
 
-            # Apply accessory overlays for each detected face.
+            # Step 6: Apply accessory overlays for each detected face.
+            t_accessory = time.time()
             for face_info in faces:
                 edited_image = self.accessory_placer.apply_accessories(
                     edited_image, face_info, accessories
                 )
+            print(
+                "Accessory application took {:.3f} seconds.".format(
+                    time.time() - t_accessory
+                )
+            )
 
-            # Apply a full-image effect overlay if specified.
+            # Step 7: Apply an overall effect overlay if specified.
             if accessories.get("effect", "none").lower() != "none":
+                t_effect = time.time()
                 edited_image = self.accessory_placer.apply_effect(
                     edited_image, accessories["effect"]
                 )
+                print(
+                    "Effect overlay applied in {:.3f} seconds.".format(
+                        time.time() - t_effect
+                    )
+                )
 
+            # Step 8: Save the processed image for logging/debug.
             output_path = f"./output/result_{idx+1}.jpg"
             cv2.imwrite(output_path, edited_image)
-            print(f"Saved result to {output_path}")
+            print(
+                "Saved result {} to {} (iteration took {:.3f} seconds).".format(
+                    idx + 1, output_path, time.time() - t_iter
+                )
+            )
             results.append(edited_image)
 
         # Cleanup temporary file.
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
+        print(
+            "Total pipeline processing time: {:.3f} seconds.".format(
+                time.time() - overall_start
+            )
+        )
         return results
