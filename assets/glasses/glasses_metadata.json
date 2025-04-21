@@ -34,5 +34,32 @@
     "rotation_offset": 0,
     "offset_x": 0,
     "offset_y": 0
+  },
+  "harry_potter_glasses": {
+    "anchor_x": 615,
+    "anchor_y": 603,
+    "scale_mode": "head_width",
+    "scale_factor": 1.0,
+    "rotation_offset": 0,
+    "offset_x": 0,
+    "offset_y": 0
+  },
+  "party_glasses": {
+    "anchor_x": 1233,
+    "anchor_y": 437,
+    "scale_mode": "head_width",
+    "scale_factor": 1.0,
+    "rotation_offset": 0,
+    "offset_x": 0,
+    "offset_y": 0
+  },
+  "thug_life_glasses": {
+    "anchor_x": 463,
+    "anchor_y": 243,
+    "scale_mode": "head_width",
+    "scale_factor": 1.0,
+    "rotation_offset": 0,
+    "offset_x": 0,
+    "offset_y": 0
   }
 }

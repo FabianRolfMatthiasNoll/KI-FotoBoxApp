@@ -151,10 +151,12 @@ class ImagePipeline:
         if background_override is not None and background_override.strip() != "":
             for suggestion in suggestions:
                 suggestion.Background = background_override
+                self.asset_dirs["backgrounds"] = "assets/event_backgrounds"
             print(f"Overriding background with: {background_override}")
         if effect_override is not None and effect_override.strip() != "":
             for suggestion in suggestions:
                 suggestion.Effects = effect_override
+                self.asset_dirs["effects"] = "assets/event_effects"
             print(f"Overriding effect with: {effect_override}")
 
         if not faces:
