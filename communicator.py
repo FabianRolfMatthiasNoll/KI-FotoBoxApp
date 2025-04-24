@@ -5,7 +5,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-def test_upload(image_path, background_override=None, effect_override=None):
+def test_upload(
+    image_path, background_override=None, effect_override=None, accessory_override=None
+):
     url = "http://localhost:8000/process_image"
 
     # Open the image file in binary mode
@@ -17,6 +19,8 @@ def test_upload(image_path, background_override=None, effect_override=None):
             data["background_override"] = background_override
         if effect_override:
             data["effect_override"] = effect_override
+        if accessory_override:
+            data["accessory_override"] = accessory_override
 
         print("Sending request to the server...")
         response = requests.post(url, files=files, data=data)
@@ -71,7 +75,8 @@ if __name__ == "__main__":
     image_path = "assets/test_images/four-friends.jpg"
 
     # Optionally, specify overrides (or leave as None to use default suggestions).
-    background_override = None  # Replace with asset name if available, or None
-    effect_override = None  # Replace with effect asset name if available, or None
+    accessory_override = "none"  # "none" disables, None enables
+    background_override = "none"  # "none" disables, None enables, "dhbw" uses dhbw background
+    effect_override = "none"  # "none" disables, None enables, "dhbw_banner" uses dhbw banner
 
-    test_upload(image_path, background_override, effect_override)
+    test_upload(image_path, background_override, effect_override, accessory_override)

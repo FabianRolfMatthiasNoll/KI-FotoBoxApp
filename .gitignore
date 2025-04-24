@@ -176,6 +176,8 @@ pyrightconfig.json
 u2net/u2net.pth
 models/u2net.pth
 
+.venv2
+
 output/*
 prompt.txt
 checkpoints/*

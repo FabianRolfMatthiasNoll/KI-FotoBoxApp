@@ -55,6 +55,7 @@ async def process_image_endpoint(
     image: UploadFile = File(...),
     background_override: str = Form(None),
     effect_override: str = Form(None),
+    accessory_override: str = Form(None),
 ):
     """
     Receives an image and optional background/effect overrides, processes it
@@ -74,7 +75,7 @@ async def process_image_endpoint(
         # Use the ImagePipeline instance that was created at startup.
         if app_pipeline is not None:
             results = app_pipeline.process_image(
-                input_image, background_override, effect_override
+                input_image, background_override, effect_override, accessory_override
             )
     except Exception as e:
         raise HTTPException(

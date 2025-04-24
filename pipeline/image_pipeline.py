@@ -93,7 +93,9 @@ class ImagePipeline:
         )
         return prompt
 
-    def process_image(self, image, background_override, effect_override):
+    def process_image(
+        self, image, background_override, effect_override, accessory_override
+    ):
         """
         Processes the input image (a numpy array):
         - Generates an asset prompt.
@@ -142,6 +144,11 @@ class ImagePipeline:
                 time.time() - t2
             )
         )
+        debug_img = image.copy()
+        # draw_faces() aus pipeline.image_utils zeichnet genau das:
+        debug_img = draw_faces(debug_img, faces)
+        debug_path = "./debug_landmarks_bbox.jpg"
+        cv2.imwrite(debug_path, debug_img)
         suggestions = [
             structured_response.suggestion1,
             structured_response.suggestion2,
@@ -158,6 +165,11 @@ class ImagePipeline:
                 suggestion.Effects = effect_override
                 self.asset_dirs["effects"] = "assets/event_effects"
             print(f"Overriding effect with: {effect_override}")
+        if accessory_override is not None and accessory_override.strip() != "":
+            for suggestion in suggestions:
+                suggestion.Hats = "none"
+                suggestion.Glasses = "none"
+                suggestion.Masks = "none"
 
         if not faces:
             print("No faces detected.")
