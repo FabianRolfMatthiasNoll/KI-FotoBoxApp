@@ -24,7 +24,7 @@
 
 3. **MODNet-Modell herunterladen**  
    Lade das vortrainierte MODNet-Modell herunter und speichere es im Verzeichnis `checkpoints/`.  
-   > ⚠️ **Hinweis**: Der Download-Link muss hier noch eingefügt werden.
+   [Download Link](https://huggingface.co/DavG25/modnet-pretrained-models/blob/main/models/modnet_photographic_portrait_matting.ckpt)
 
 ---
 
